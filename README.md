@@ -1,0 +1,335 @@
+# qpg
+
+`qpg` is a local-first CLI to index and query PostgreSQL **schema metadata** (DDL structure only).
+
+Full docs live in [`docs/`](docs/README.md).
+
+It indexes:
+- Schemas
+- Tables
+- Columns
+- Constraints
+- Indexes
+- Views
+- Extensions
+- Functions/procedures
+
+It does **not**:
+- Query table rows
+- Execute arbitrary SQL
+- Run `EXPLAIN`
+- Modify database state
+
+## Security Model
+
+On PostgreSQL connect, qpg enforces:
+- `SET default_transaction_read_only = on`
+- `SET statement_timeout = '5s'`
+- `SET idle_in_transaction_session_timeout = '10s'`
+
+Privilege checks (`qpg auth check`) inspect role inheritance via `pg_auth_members` and fail on prohibited privileges unless `--allow-extra-privileges` is provided.
+
+Allowed baseline:
+- `SELECT`
+- Schema `USAGE`
+- Access to `pg_catalog` and `information_schema`
+
+Prohibited by default:
+- `INSERT`, `UPDATE`, `DELETE`, `TRUNCATE`
+- `CREATE`, `ALTER`, `DROP`
+- `REFERENCES`, `TRIGGER`
+- Database `CREATE`/`TEMP`
+- Function `EXECUTE` (unless `--allow-execute`)
+
+## Local Index
+
+SQLite path:
+- `${XDG_CACHE_HOME:-~/.cache}/qpg/index.sqlite`
+
+Schema includes:
+- `sources`
+- `db_objects`
+- `columns`
+- `constraints`
+- `indexes`
+- `dependencies`
+- `contexts`
+- `object_context_effective`
+- `lexical_docs`
+- `objects_fts` (FTS5)
+- `object_vectors` (sqlite-vec compatible storage)
+- `llm_cache`
+
+## Quick Start
+
+Install and verify:
+
+```bash
+uv sync
+uv run qpg init
+uv run qpg --help
+uv run pytest
+```
+
+Optional tool install:
+
+```bash
+uv tool install .
+qpg --help
+```
+
+Source management:
+
+```bash
+qpg source add "postgresql://user:pass@localhost:5432/app" --name work
+qpg source list
+qpg source rm work
+qpg source rename work prod
+```
+
+`qpg source add` now performs an immediate auto-refresh for that source:
+- schema index refresh (`update` behavior)
+- usage snapshot refresh (`usage refresh` behavior)
+- context generation is still explicit-only
+- auto-refresh is best-effort; source creation still succeeds if refresh fails
+
+Configuration:
+
+```bash
+qpg config
+qpg config --json
+```
+
+Passwordless DSNs are supported (for example `postgresql://user@host:5432/db`) so libpq can authenticate via `.pgpass`, `PGPASSWORD`, or other standard PostgreSQL auth mechanisms.
+
+Source-level filtering is supported:
+- `--schema <name>` (repeatable) to include only selected schemas
+- `--skip-pattern <glob>` (repeatable) to skip matching objects (fqname or object name)
+
+To provide password via stdin (instead of putting it in shell history), use `--password`:
+
+```bash
+printf '%s\n' 'supersecret' | qpg source add "postgresql://user@localhost:5432/app" --name work --password
+```
+
+Context management:
+
+```bash
+qpg context add qpg://work "Production billing DB"
+qpg context add qpg://work/public "Critical payment schema"
+qpg usage refresh --source work
+qpg context generate --source work --use-latest-usage --api-key "$OPENAI_API_KEY"
+# legacy index-usage ingestion mode (JSON or JSONL):
+cat index-usage.jsonl | qpg context generate --from index-usage --source work --input - --unused-days 14 --replace-managed
+qpg context list
+qpg context rm 1
+```
+
+`qpg context generate` is an explicit OpenAI-powered workflow that drafts table-level context from indexed schema metadata (table definition/comments + columns). Generated entries are written to the same `contexts` table and target `qpg://<source>/<schema.table>`, so the same context is inherited by the table and its column objects. Generation is conservative: if it cannot make a reasonable high-level inference, it skips that table instead of guessing.
+
+`qpg usage refresh --source <source>` captures index usage stats from PostgreSQL and writes a local snapshot at `${XDG_STATE_HOME:-~/.local/state}/qpg/usage/<source>.jsonl`.
+
+`qpg context generate --use-latest-usage` loads that snapshot and includes matching table-level index usage signals as additional OpenAI prompt evidence.
+
+`qpg context generate --from index-usage` ingests operator-provided usage stats and writes managed context on matching index objects (targeted by object id fragment, for example `qpg://work#<object_id>`). This is designed for operational signals like "unused for 2+ weeks" and keeps manual context untouched.
+
+Supported input formats for `--from index-usage`:
+- JSON array of objects
+- JSONL (one object per line)
+
+Required fields per object:
+- `schema`
+- `table` (or `table_name`)
+- `index` (or `index_name`)
+- `unused_days`
+
+Optional fields:
+- `source` (records with non-matching source are skipped)
+- `as_of`
+- `idx_scan`
+
+Runtime settings are configurable via environment:
+- `QPG_PG_CONNECT_TIMEOUT_SEC`
+- `QPG_OPENAI_API_KEY` (or `OPENAI_API_KEY`)
+- `QPG_OPENAI_MODEL` (or `OPENAI_MODEL`)
+- `QPG_OPENAI_BASE_URL` (or `OPENAI_BASE_URL`)
+
+Runtime settings are also configurable via YAML:
+- `${XDG_CONFIG_HOME:-~/.config}/qpg/config.yaml`
+
+Example `config.yaml`:
+
+```yaml
+pg_connect_timeout_sec: 1
+openai_api_key: "sk-..."
+openai_model: "gpt-5-nano"
+openai_base_url: "https://api.openai.com/v1"
+```
+
+`pg_connect_timeout_sec` controls how long qpg waits to establish a PostgreSQL connection before failing fast. Default: `1`.
+
+Precedence:
+1. CLI flags (`--api-key`, `--model`, `--base-url`)
+2. Environment variables (`QPG_OPENAI_*`, then `OPENAI_*`)
+3. YAML config file
+4. Built-in defaults
+
+Security checks:
+
+```bash
+qpg auth check
+qpg auth check --source work
+qpg auth check --source work --allow-extra-privileges
+```
+
+Indexing:
+
+```bash
+qpg update
+qpg update --source work
+qpg status
+qpg cleanup
+qpg repair
+```
+
+`qpg update` also refreshes usage snapshots for updated sources.
+
+Typical setup flow:
+
+```bash
+uv run qpg auth check --source work
+uv run qpg update --source work
+uv run qpg status
+```
+
+Context can improve retrieval quality:
+
+```bash
+uv run qpg context add qpg://work "Production billing database"
+uv run qpg context add qpg://work/public "Core payment schema"
+uv run qpg context list
+uv run qpg update --source work
+```
+
+Search:
+
+```bash
+qpg search "payment status column"
+qpg vsearch "table that stores subscriptions"
+qpg query "how do we model refunds"
+qpg get "public.orders"
+qpg get "#abc123"
+qpg schema --source work
+```
+
+Common options:
+- `--json`
+- `--files`
+- `-n`
+- `--all`
+- `--min-score`
+- `--schema`
+- `--kind table|column|index|constraint|view|function`
+- `--source`
+
+## Search Pipeline
+
+- `search`: FTS5 BM25 with weighted columns (`name_col`, `comment_col`, `defs_col`, `context_col`) and boosted context.
+- `vsearch`: vector similarity on local `object_vectors` (enabled by default and required).
+- `query`: deterministic expansion + fused ranking (RRF `k=60`) + top-rank bonus + optional rerank hook.
+
+## Vector Model
+
+qpg uses a local cached embedding model by default:
+- model repo: `microsoft/codebert-base`
+- cache directory: `${XDG_CACHE_HOME:-~/.cache}/qpg/models/microsoft__codebert-base`
+
+Download model assets into cache with:
+
+```bash
+uv run qpg init
+```
+
+## MCP Server
+
+Stdio mode:
+
+```bash
+qpg mcp
+```
+
+HTTP mode:
+
+```bash
+qpg mcp --http
+# POST /mcp
+# GET /health
+# JSON-RPC 2.0 MCP methods: initialize, tools/list, tools/call
+```
+
+Daemon mode:
+
+```bash
+qpg mcp --http --daemon
+qpg mcp stop
+```
+
+On startup, MCP best-effort refreshes configured sources in the background using the same guarded update behavior as `qpg update`. If a source cannot be reached, the server still starts and logs the refresh error to stderr.
+
+Exposed tools:
+- `qpg.search`
+- `qpg.deep_search`
+- `qpg.get`
+- `qpg.status`
+- `qpg.list_sources`
+
+Opt-in source refresh:
+
+```bash
+qpg mcp --enable-update-tool
+```
+
+Then call `qpg.update_source` with `{"source":"work"}`.
+
+Example MCP HTTP calls:
+
+```bash
+curl -s http://127.0.0.1:8765/health
+curl -s -X POST http://127.0.0.1:8765/mcp \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"example","version":"1.0.0"}}}'
+curl -s -X POST http://127.0.0.1:8765/mcp \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"qpg_status","arguments":{}}}'
+```
+
+## Development
+
+Lint:
+
+```bash
+uv run ruff check .
+```
+
+Type check:
+
+```bash
+uv run mypy
+```
+
+Tests:
+
+```bash
+uv run pytest
+```
+
+Integration harness (Docker Compose, self-provisioned roles/db state):
+
+```bash
+uv run pytest --run-integration -m integration
+```
+
+Notes:
+- Requires local Docker with `docker compose`.
+- Harness file: `tests/harness/docker-compose.yml`.
+- Default `uv run pytest` keeps integration tests skipped.
