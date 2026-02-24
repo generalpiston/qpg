@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_PATH="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+
+ensure_writable_dir() {
+  local dir="$1"
+  mkdir -p "$dir" >/dev/null 2>&1 && [[ -w "$dir" ]]
+}
+
+if [[ -z "${XDG_CACHE_HOME:-}" ]]; then
+  DEFAULT_CACHE_HOME="${HOME:-}/.cache"
+  if [[ -n "${HOME:-}" ]] && ensure_writable_dir "$DEFAULT_CACHE_HOME"; then
+    export XDG_CACHE_HOME="$DEFAULT_CACHE_HOME"
+  else
+    export XDG_CACHE_HOME="/tmp/qpg-xdg-cache"
+    mkdir -p "$XDG_CACHE_HOME"
+  fi
+fi
+
+if [[ -z "${XDG_STATE_HOME:-}" ]]; then
+  DEFAULT_STATE_HOME="${HOME:-}/.local/state"
+  if [[ -n "${HOME:-}" ]] && ensure_writable_dir "$DEFAULT_STATE_HOME"; then
+    export XDG_STATE_HOME="$DEFAULT_STATE_HOME"
+  else
+    export XDG_STATE_HOME="/tmp/qpg-xdg-state"
+    mkdir -p "$XDG_STATE_HOME"
+  fi
+fi
+
+if [[ -z "${UV_CACHE_DIR:-}" ]]; then
+  export UV_CACHE_DIR="${XDG_CACHE_HOME}/uv"
+  mkdir -p "$UV_CACHE_DIR"
+fi
+
+exec uv run --project "$SCRIPT_DIR" qpg mcp

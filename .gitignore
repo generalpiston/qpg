@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+.venv/
+
+# Tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Coverage
+.coverage
+.coverage.*
+htmlcov/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Local runtime files
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.db
+*.pid
+
+# Local model/cache artifacts
+models/
+
+# Editor/OS noise
+.DS_Store
+.idea/
+.vscode/
