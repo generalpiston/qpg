@@ -87,6 +87,12 @@ qpg source rm work
 qpg source rename work prod
 ```
 
+`qpg source add` now performs an immediate auto-refresh for that source:
+- schema index refresh (`update` behavior)
+- usage snapshot refresh (`usage refresh` behavior)
+- context generation is still explicit-only
+- auto-refresh is best-effort; source creation still succeeds if refresh fails
+
 Configuration:
 
 ```bash
@@ -111,12 +117,36 @@ Context management:
 ```bash
 qpg context add qpg://work "Production billing DB"
 qpg context add qpg://work/public "Critical payment schema"
-qpg context generate --source work --api-key "$OPENAI_API_KEY"
+qpg usage refresh --source work
+qpg context generate --source work --use-latest-usage --api-key "$OPENAI_API_KEY"
+# legacy index-usage ingestion mode (JSON or JSONL):
+cat index-usage.jsonl | qpg context generate --from index-usage --source work --input - --unused-days 14 --replace-managed
 qpg context list
 qpg context rm 1
 ```
 
 `qpg context generate` is an explicit OpenAI-powered workflow that drafts table-level context from indexed schema metadata (table definition/comments + columns). Generated entries are written to the same `contexts` table and target `qpg://<source>/<schema.table>`, so the same context is inherited by the table and its column objects. Generation is conservative: if it cannot make a reasonable high-level inference, it skips that table instead of guessing.
+
+`qpg usage refresh --source <source>` captures index usage stats from PostgreSQL and writes a local snapshot under `${XDG_STATE_HOME:-~/.local/state}/qpg/usage/`.
+
+`qpg context generate --use-latest-usage` loads that snapshot and includes matching table-level index usage signals as additional OpenAI prompt evidence.
+
+`qpg context generate --from index-usage` ingests operator-provided usage stats and writes managed context on matching index objects (targeted by object id fragment, for example `qpg://work#<object_id>`). This is designed for operational signals like "unused for 2+ weeks" and keeps manual context untouched.
+
+Supported input formats for `--from index-usage`:
+- JSON array of objects
+- JSONL (one object per line)
+
+Required fields per object:
+- `schema`
+- `table` (or `table_name`)
+- `index` (or `index_name`)
+- `unused_days`
+
+Optional fields:
+- `source` (records with non-matching source are skipped)
+- `as_of`
+- `idx_scan`
 
 OpenAI settings are configurable via environment:
 - `QPG_OPENAI_API_KEY` (or `OPENAI_API_KEY`)
@@ -157,6 +187,8 @@ qpg status
 qpg cleanup
 qpg repair
 ```
+
+`qpg update` also refreshes usage snapshots for updated sources.
 
 Search:
 

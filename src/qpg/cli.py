@@ -16,6 +16,12 @@ from qpg.context_generate import (
     generate_table_context_text,
     list_table_context_candidates,
 )
+from qpg.context_usage import (
+    IndexUsageInputError,
+    IndexUsageRecord,
+    apply_index_usage_contexts,
+    load_index_usage_records,
+)
 from qpg.contexts import (
     ContextSourceNotFoundError,
     InvalidContextTarget,
@@ -52,6 +58,13 @@ from qpg.sources import (
     mark_source_error,
     mark_source_indexed,
     rename_source,
+)
+from qpg.usage import (
+    UsageSnapshotError,
+    collect_index_usage_records,
+    load_usage_snapshot_records,
+    usage_snapshot_path,
+    write_usage_snapshot_records,
 )
 from qpg.util.pg_dsn import dsn_has_password, dsn_with_password
 from qpg.util.redaction import redact_dsn, redact_secret
@@ -153,6 +166,25 @@ def _resolve_source_add_dsn(dsn: str, *, use_stdin_password: bool, stdin: TextIO
     return dsn_with_password(dsn, password)
 
 
+def _refresh_usage_snapshot_for_source(
+    *,
+    source_name: str,
+    source_dsn: str,
+) -> tuple[Path, int]:
+    try:
+        with connect_pg(source_dsn) as pg_conn:
+            records = collect_index_usage_records(pg_conn, source_name=source_name)
+    except PostgresDependencyError:
+        raise
+    except Exception as exc:
+        raise RuntimeError(f"failed usage refresh for '{source_name}': {exc}") from exc
+
+    paths = ensure_dirs(get_paths())
+    output_path = usage_snapshot_path(paths, source_name)
+    write_usage_snapshot_records(output_path, records)
+    return output_path, len(records)
+
+
 def cmd_source(args: argparse.Namespace) -> int:
     conn = _with_db()
     try:
@@ -174,17 +206,86 @@ def cmd_source(args: argparse.Namespace) -> int:
                 include_schemas=args.schemas,
                 skip_patterns=args.skip_patterns,
             )
+
+            auto_refreshed = False
+            auto_refresh_error: str | None = None
+            stats: Any | None = None
+            usage_path: Path | None = None
+            usage_records: list[IndexUsageRecord] = []
+            try:
+                require_vector_model()
+                ctx_rows = list_contexts(conn)
+                with connect_pg(source.dsn) as pg_conn:
+                    bundle = introspect_schema(pg_conn, include_functions=True)
+                    bundle = apply_filters(
+                        bundle,
+                        include_schemas=source.include_schemas,
+                        skip_patterns=source.skip_patterns,
+                    )
+                    usage_records = collect_index_usage_records(pg_conn, source_name=source.name)
+
+                for warning in bundle.warnings:
+                    print(f"warning: {warning}", file=sys.stderr)
+
+                stats = update_source_index(conn, source=source, bundle=bundle, contexts=ctx_rows)
+                mark_source_indexed(conn, source.id)
+
+                paths = ensure_dirs(get_paths())
+                usage_path = usage_snapshot_path(paths, source.name)
+                write_usage_snapshot_records(usage_path, usage_records)
+                auto_refreshed = True
+            except Exception as exc:
+                message = f"source '{source.name}' added, but auto-refresh failed: {exc}"
+                mark_source_error(conn, source.id, message)
+                auto_refresh_error = str(exc)
+
             if args.json:
-                _print_json(
-                    {
-                        "name": source.name,
-                        "dsn": redact_dsn(source.dsn),
-                        "include_schemas": source.include_schemas,
-                        "skip_patterns": source.skip_patterns,
-                    }
-                )
+                payload: dict[str, Any] = {
+                    "name": source.name,
+                    "dsn": redact_dsn(source.dsn),
+                    "include_schemas": source.include_schemas,
+                    "skip_patterns": source.skip_patterns,
+                    "auto_refreshed": auto_refreshed,
+                }
+                if auto_refresh_error:
+                    payload["auto_refresh_error"] = auto_refresh_error
+                if auto_refreshed and stats is not None and usage_path is not None:
+                    payload.update(
+                        {
+                            "indexed": {
+                                "objects": stats.objects,
+                                "columns": stats.columns,
+                                "constraints": stats.constraints,
+                                "indexes": stats.indexes,
+                                "dependencies": stats.dependencies,
+                                "vectors": stats.vectors,
+                            },
+                            "usage_snapshot": {
+                                "path": str(usage_path),
+                                "records": len(usage_records),
+                            },
+                        }
+                    )
+                _print_json(payload)
             else:
                 print(f"added source '{source.name}'")
+                if auto_refreshed and stats is not None and usage_path is not None:
+                    print(
+                        "indexed "
+                        f"objects={stats.objects} columns={stats.columns} "
+                        f"constraints={stats.constraints} indexes={stats.indexes} "
+                        f"dependencies={stats.dependencies} vectors={stats.vectors}"
+                    )
+                    print(
+                        f"usage snapshot refreshed: {source.name} records={len(usage_records)} "
+                        f"path={usage_path}"
+                    )
+                elif auto_refresh_error:
+                    print(
+                        f"warning: source '{source.name}' added, but auto-refresh failed: {auto_refresh_error}",
+                        file=sys.stderr,
+                    )
+            
             return 0
 
         if args.source_cmd == "list":
@@ -237,6 +338,42 @@ def cmd_source(args: argparse.Namespace) -> int:
     return 1
 
 
+def cmd_usage(args: argparse.Namespace) -> int:
+    conn = _with_db()
+    try:
+        if args.usage_cmd != "refresh":
+            return 1
+
+        source = get_source(conn, args.source)
+        try:
+            output_path, record_count = _refresh_usage_snapshot_for_source(
+                source_name=source.name,
+                source_dsn=source.dsn,
+            )
+        except PostgresDependencyError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        except Exception as exc:
+            print(str(exc), file=sys.stderr)
+            return 4
+
+        payload = {
+            "source": source.name,
+            "path": str(output_path),
+            "records": record_count,
+        }
+        if args.json:
+            _print_json(payload)
+        else:
+            print(f"usage snapshot refreshed: {source.name} records={record_count} path={output_path}")
+        return 0
+    except (SourceNotFoundError, UsageSnapshotError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    finally:
+        conn.close()
+
+
 def cmd_context(args: argparse.Namespace) -> int:
     conn = _with_db(check_same_thread=not getattr(args, "http", False))
     try:
@@ -270,6 +407,44 @@ def cmd_context(args: argparse.Namespace) -> int:
             return 0
 
         if args.context_cmd == "generate":
+            if args.from_mode == "index-usage":
+                if not args.source:
+                    print("--source is required for --from index-usage", file=sys.stderr)
+                    return 2
+                records = load_index_usage_records(args.input, stdin=sys.stdin)
+                result = apply_index_usage_contexts(
+                    conn,
+                    source=args.source,
+                    records=records,
+                    unused_days_threshold=float(args.unused_days),
+                    replace_managed=bool(args.replace_managed),
+                    dry_run=bool(args.dry_run),
+                )
+                payload = {
+                    "mode": "index-usage",
+                    "source": args.source,
+                    "applied": result.applied,
+                    "skipped_below_threshold": result.skipped_below_threshold,
+                    "skipped_missing_index": result.skipped_missing_index,
+                    "skipped_source_mismatch": result.skipped_source_mismatch,
+                    "removed_managed": result.removed_managed,
+                    "unused_days_threshold": float(args.unused_days),
+                    "dry_run": bool(args.dry_run),
+                    "results": result.results,
+                }
+                if args.json:
+                    _print_json(payload)
+                else:
+                    print(
+                        f"done: applied={result.applied} "
+                        f"skipped_below_threshold={result.skipped_below_threshold} "
+                        f"skipped_missing_index={result.skipped_missing_index} "
+                        f"skipped_source_mismatch={result.skipped_source_mismatch} "
+                        f"removed_managed={result.removed_managed} "
+                        f"dry_run={bool(args.dry_run)}"
+                    )
+                return 0
+
             openai = resolve_openai_settings(
                 api_key_override=args.api_key,
                 base_url_override=args.base_url,
@@ -307,6 +482,7 @@ def cmd_context(args: argparse.Namespace) -> int:
                             "generated": 0,
                             "skipped_existing": 0,
                             "skipped_inference": 0,
+                            "use_latest_usage": bool(args.use_latest_usage),
                             "dry_run": bool(args.dry_run),
                             "results": [],
                         }
@@ -314,6 +490,22 @@ def cmd_context(args: argparse.Namespace) -> int:
                 else:
                     print("no table objects found")
                 return 0
+
+            usage_signals_by_table: dict[tuple[str, str, str], list[IndexUsageRecord]] = {}
+            usage_records_loaded: dict[str, int] = {}
+            if args.use_latest_usage:
+                paths = ensure_dirs(get_paths())
+                candidate_sources = sorted({candidate.source_name for candidate in candidates})
+                for source_name in candidate_sources:
+                    source_records = load_usage_snapshot_records(paths, source=source_name)
+                    usage_records_loaded[source_name] = len(source_records)
+                    for record in source_records:
+                        key = (
+                            source_name,
+                            record.schema.strip().casefold(),
+                            record.table.strip().casefold(),
+                        )
+                        usage_signals_by_table.setdefault(key, []).append(record)
 
             generated = 0
             skipped_existing = 0
@@ -327,13 +519,32 @@ def cmd_context(args: argparse.Namespace) -> int:
                         print(f"skipped existing context: {candidate.target_uri}")
                     continue
 
-                generated_result = generate_table_context_text(
-                    conn,
-                    candidate,
-                    api_key=api_key,
-                    model=model,
-                    base_url=base_url,
-                )
+                table_usage_signals: list[IndexUsageRecord] | None = None
+                if args.use_latest_usage:
+                    table_usage_signals = usage_signals_by_table.get(
+                        (
+                            candidate.source_name,
+                            (candidate.schema_name or "").strip().casefold(),
+                            candidate.object_name.strip().casefold(),
+                        ),
+                        [],
+                    )
+                    generated_result = generate_table_context_text(
+                        conn,
+                        candidate,
+                        api_key=api_key,
+                        model=model,
+                        base_url=base_url,
+                        index_usage_signals=table_usage_signals,
+                    )
+                else:
+                    generated_result = generate_table_context_text(
+                        conn,
+                        candidate,
+                        api_key=api_key,
+                        model=model,
+                        base_url=base_url,
+                    )
                 if isinstance(generated_result, ContextGenerationResult):
                     context_text = (
                         generated_result.context_text.strip()
@@ -365,6 +576,9 @@ def cmd_context(args: argparse.Namespace) -> int:
                             "target_uri": candidate.target_uri,
                             "status": "generated",
                             "body": context_text,
+                            "usage_signals": (
+                                len(table_usage_signals) if isinstance(table_usage_signals, list) else 0
+                            ),
                         }
                     )
                     if not args.json:
@@ -378,6 +592,7 @@ def cmd_context(args: argparse.Namespace) -> int:
                 result_payload = {
                     "target_uri": candidate.target_uri,
                     "status": "skipped_inference",
+                    "usage_signals": len(table_usage_signals) if isinstance(table_usage_signals, list) else 0,
                 }
                 if skip_reason:
                     result_payload["reason"] = skip_reason
@@ -393,6 +608,8 @@ def cmd_context(args: argparse.Namespace) -> int:
                 "generated": generated,
                 "skipped_existing": skipped_existing,
                 "skipped_inference": skipped_inference,
+                "use_latest_usage": bool(args.use_latest_usage),
+                "usage_records_loaded": usage_records_loaded,
                 "dry_run": bool(args.dry_run),
                 "results": results,
             }
@@ -405,7 +622,13 @@ def cmd_context(args: argparse.Namespace) -> int:
                     f"dry_run={bool(args.dry_run)}"
                 )
             return 0
-    except (InvalidContextTarget, ContextSourceNotFoundError, ContextGenerationError) as exc:
+    except (
+        InvalidContextTarget,
+        ContextSourceNotFoundError,
+        ContextGenerationError,
+        IndexUsageInputError,
+        UsageSnapshotError,
+    ) as exc:
         print(str(exc), file=sys.stderr)
         return 2
     finally:
@@ -540,6 +763,25 @@ def cmd_update(args: argparse.Namespace) -> int:
                 )
             except Exception as exc:
                 message = f"failed indexing: {exc}"
+                mark_source_error(conn, source.id, message)
+                print(message, file=sys.stderr)
+                exit_code = 4
+                continue
+
+            try:
+                usage_path, usage_count = _refresh_usage_snapshot_for_source(
+                    source_name=source.name,
+                    source_dsn=source.dsn,
+                )
+                print(
+                    f"usage snapshot refreshed: {source.name} "
+                    f"records={usage_count} path={usage_path}"
+                )
+            except PostgresDependencyError as exc:
+                print(str(exc), file=sys.stderr)
+                return 2
+            except Exception as exc:
+                message = str(exc)
                 mark_source_error(conn, source.id, message)
                 print(message, file=sys.stderr)
                 exit_code = 4
@@ -1063,6 +1305,16 @@ def build_parser() -> argparse.ArgumentParser:
     source_rename.add_argument("new_name")
     source_rename.set_defaults(func=cmd_source)
 
+    usage_parser = subparsers.add_parser("usage", help="collect operational usage signals")
+    usage_sub = usage_parser.add_subparsers(dest="usage_cmd", required=True)
+    usage_refresh = usage_sub.add_parser(
+        "refresh",
+        help="refresh local index-usage snapshot for a source",
+    )
+    usage_refresh.add_argument("--source", required=True)
+    usage_refresh.add_argument("--json", action="store_true")
+    usage_refresh.set_defaults(func=cmd_usage)
+
     context_parser = subparsers.add_parser("context", help="manage context entries")
     context_sub = context_parser.add_subparsers(dest="context_cmd", required=True)
 
@@ -1082,7 +1334,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     context_generate = context_sub.add_parser(
         "generate",
-        help="generate table contexts via OpenAI from indexed schema metadata",
+        help="generate context via OpenAI or ingest index-usage stats",
+    )
+    context_generate.add_argument(
+        "--from",
+        dest="from_mode",
+        choices=["openai", "index-usage"],
+        default="openai",
+        help="context mode: OpenAI table inference or index-usage ingestion",
     )
     context_generate.add_argument("--source", help="limit generation to a source name")
     context_generate.add_argument("--schema", help="limit generation to a schema name")
@@ -1101,6 +1360,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     context_generate.add_argument("--overwrite", action="store_true")
     context_generate.add_argument("--dry-run", action="store_true")
+    context_generate.add_argument(
+        "--use-latest-usage",
+        action="store_true",
+        help="include latest usage snapshot from `qpg usage refresh` as OpenAI prompt evidence",
+    )
+    context_generate.add_argument(
+        "--input",
+        default="-",
+        help="JSON/JSONL input path for --from index-usage (use '-' for stdin)",
+    )
+    context_generate.add_argument(
+        "--unused-days",
+        type=float,
+        default=14.0,
+        help="minimum unused_days threshold for --from index-usage",
+    )
+    context_generate.add_argument(
+        "--replace-managed",
+        action="store_true",
+        help="remove existing managed index-usage contexts in source before apply",
+    )
     context_generate.add_argument("--json", action="store_true")
     context_generate.set_defaults(func=cmd_context)
 

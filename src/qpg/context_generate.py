@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from typing import Any
 from urllib import error, request
 
+from qpg.context_usage import IndexUsageRecord
+
 
 @dataclass(frozen=True)
 class ColumnSummary:
@@ -138,7 +140,19 @@ def _clip(value: str, limit: int) -> str:
     return value[: max(limit - 3, 0)] + "..."
 
 
-def _build_prompt(candidate: TableContextCandidate) -> str:
+def _format_number(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    if float(value).is_integer():
+        return str(int(value))
+    return f"{value:.2f}".rstrip("0").rstrip(".")
+
+
+def _build_prompt(
+    candidate: TableContextCandidate,
+    *,
+    index_usage_signals: list[IndexUsageRecord] | None = None,
+) -> str:
     lines = [
         "You are generating conservative semantic context for PostgreSQL schema retrieval.",
         "Decide whether this table has enough signal to infer high-level intent.",
@@ -157,6 +171,20 @@ def _build_prompt(candidate: TableContextCandidate) -> str:
         lines.append(f"Table comment: {candidate.comment}")
     if candidate.definition:
         lines.append(f"Definition excerpt: {_clip(candidate.definition, 1500)}")
+
+    if index_usage_signals:
+        lines.append("Index usage signals (operator-provided, not ground truth):")
+        for signal in sorted(index_usage_signals, key=lambda item: (-item.unused_days, item.index)):
+            parts = [
+                f"- index={signal.index}",
+                f"unused_days={_format_number(signal.unused_days)}",
+            ]
+            if signal.idx_scan is not None:
+                parts.append(f"idx_scan={_format_number(signal.idx_scan)}")
+            if signal.as_of:
+                parts.append(f"as_of={signal.as_of}")
+            lines.append(", ".join(parts))
+        lines.append("Use these signals cautiously and do not infer unsupported operational causes.")
 
     if candidate.columns:
         lines.append("Columns:")
@@ -234,7 +262,6 @@ def _call_openai_chat(
 ) -> str:
     payload = {
         "model": model,
-        "temperature": 0.2,
         "messages": [
             {
                 "role": "system",
@@ -359,8 +386,9 @@ def generate_table_context_text(
     api_key: str,
     model: str,
     base_url: str,
+    index_usage_signals: list[IndexUsageRecord] | None = None,
 ) -> ContextGenerationResult:
-    prompt = _build_prompt(candidate)
+    prompt = _build_prompt(candidate, index_usage_signals=index_usage_signals)
     key = _cache_key(model=model, prompt=prompt)
     cached = _cache_lookup(conn, key)
     if cached is not None:

@@ -3,7 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import qpg.cli as cli_mod
+from qpg.config import ensure_dirs, get_paths
+from qpg.context_usage import IndexUsageRecord
 from qpg.db_sqlite import connect_sqlite, ensure_schema
+from qpg.usage import usage_snapshot_path, write_usage_snapshot_records
 
 
 def _prepare_index(tmp_path: Path) -> Path:
@@ -281,3 +284,102 @@ def test_context_list_does_not_require_http_flag(
 
     code = cli_mod.main(["context", "list"])
     assert code == 0
+
+
+def test_context_generate_uses_latest_usage_snapshot(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    db_path = _prepare_index(tmp_path)
+
+    paths = ensure_dirs(get_paths())
+    snapshot = usage_snapshot_path(paths, "work")
+    write_usage_snapshot_records(
+        snapshot,
+        [
+            IndexUsageRecord(
+                schema="public",
+                table="orders",
+                index="idx_orders_created_at",
+                unused_days=18.0,
+                as_of="2026-02-27T00:00:00Z",
+                source="work",
+                idx_scan=0.0,
+            )
+        ],
+    )
+
+    def fake_generate(
+        conn,
+        candidate,
+        *,
+        api_key: str,
+        model: str,
+        base_url: str,
+        index_usage_signals: list[IndexUsageRecord] | None = None,
+    ) -> str:
+        assert api_key == "test-key"
+        assert model == "fake-model"
+        assert index_usage_signals is not None
+        assert len(index_usage_signals) == 1
+        assert index_usage_signals[0].index == "idx_orders_created_at"
+        assert index_usage_signals[0].unused_days == 18.0
+        return "Context with usage evidence."
+
+    monkeypatch.setattr(cli_mod, "generate_table_context_text", fake_generate)
+
+    code = cli_mod.main(
+        [
+            "context",
+            "generate",
+            "--source",
+            "work",
+            "--api-key",
+            "test-key",
+            "--model",
+            "fake-model",
+            "--use-latest-usage",
+        ]
+    )
+    assert code == 0
+
+    conn = connect_sqlite(db_path)
+    try:
+        row = conn.execute("SELECT target_uri, body FROM contexts").fetchone()
+        assert row is not None
+        assert row["target_uri"] == "qpg://work/public.orders"
+        assert row["body"] == "Context with usage evidence."
+    finally:
+        conn.close()
+
+
+def test_context_generate_use_latest_usage_requires_snapshot(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+) -> None:
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    _prepare_index(tmp_path)
+
+    code = cli_mod.main(
+        [
+            "context",
+            "generate",
+            "--source",
+            "work",
+            "--api-key",
+            "test-key",
+            "--model",
+            "fake-model",
+            "--use-latest-usage",
+        ]
+    )
+    assert code == 2
+    err = capsys.readouterr().err
+    assert "usage snapshot not found for source 'work'" in err
+    assert "qpg usage refresh --source work" in err

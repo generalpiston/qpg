@@ -5,6 +5,7 @@
 - `init`
 - `config`
 - `source add|list|rm|rename`
+- `usage refresh`
 - `context add|list|rm|generate`
 - `auth check`
 - `update`
@@ -17,6 +18,12 @@
 - `get`
 - `schema`
 - `mcp`
+
+Behavior notes:
+- `source add` auto-refreshes index + usage snapshot for the new source.
+- `source add` auto-refresh is best-effort; source creation still succeeds on refresh failure.
+- `update` auto-refreshes usage snapshot for each refreshed source.
+- `context generate` remains explicit and is never auto-run.
 
 Use:
 

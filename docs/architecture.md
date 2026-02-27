@@ -176,6 +176,7 @@ Source also carries optional ingestion filters:
 
 ### Context
 Context is operator-authored meaning layered on top of schema shape.
+It can also be added via explicit tooling workflows (for example OpenAI table summarization with optional usage-snapshot evidence, or legacy index-usage ingestion), but it remains retrieval guidance rather than source-of-truth schema metadata.
 
 Targets:
 - Source-level: `qpg://work`
