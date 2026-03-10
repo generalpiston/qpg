@@ -320,14 +320,15 @@ HTTP --->| qpg mcp --http    |<---------------- clients
 ```
 
 MCP tools:
-- `qpg_search`
-- `qpg_deep_search`
-- `qpg_get`
-- `qpg_status`
-- `qpg_list_sources`
+- `qpg.search`
+- `qpg.deep_search`
+- `qpg.get`
+- `qpg.status`
+- `qpg.list_sources`
 
 Constraint:
-- MCP exposes retrieval/status only, not arbitrary SQL execution.
+- MCP exposes schema-index tools only, not arbitrary SQL execution.
+- `qpg.update_source` is opt-in and disabled unless the MCP server starts with `--enable-update-tool`.
 
 ## Component Map
 

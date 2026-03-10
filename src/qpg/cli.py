@@ -59,6 +59,7 @@ from qpg.sources import (
     mark_source_indexed,
     rename_source,
 )
+from qpg.update import NoSourcesConfiguredError, update_sources
 from qpg.usage import (
     UsageSnapshotError,
     collect_index_usage_records,
@@ -710,84 +711,45 @@ def cmd_auth_check(args: argparse.Namespace) -> int:
 
 def cmd_update(args: argparse.Namespace) -> int:
     conn = _with_db()
-    exit_code = 0
     try:
         try:
-            sources = _collect_sources(conn, args.source)
-        except SourceNotFoundError as exc:
+            payload = update_sources(
+                conn,
+                source_name=args.source,
+                skip_functions=args.skip_functions,
+            )
+        except (SourceNotFoundError, NoSourcesConfiguredError) as exc:
             print(str(exc), file=sys.stderr)
             return 2
-        if not sources:
-            print("no sources configured", file=sys.stderr)
-            return 2
-
-        try:
-            require_vector_model()
         except VectorModelNotInitializedError as exc:
             print(str(exc), file=sys.stderr)
             return 2
+        except PostgresDependencyError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
 
-        ctx_rows = list_contexts(conn)
-
-        for source in sources:
-            print(f"== update: {source.name} ==")
-            try:
-                with connect_pg(source.dsn) as pg_conn:
-                    bundle = introspect_schema(pg_conn, include_functions=not args.skip_functions)
-                    bundle = apply_filters(
-                        bundle,
-                        include_schemas=source.include_schemas,
-                        skip_patterns=source.skip_patterns,
-                    )
-            except PostgresDependencyError as exc:
-                print(str(exc), file=sys.stderr)
-                return 2
-            except Exception as exc:
-                message = f"failed introspection: {exc}"
-                mark_source_error(conn, source.id, message)
-                print(message, file=sys.stderr)
-                exit_code = 4
-                continue
-
-            for warning in bundle.warnings:
+        for result in payload["results"]:
+            print(f"== update: {result['source']} ==")
+            for warning in result["warnings"]:
                 print(f"warning: {warning}", file=sys.stderr)
-
-            try:
-                stats = update_source_index(conn, source=source, bundle=bundle, contexts=ctx_rows)
-                mark_source_indexed(conn, source.id)
+            indexed = result.get("indexed")
+            if indexed:
                 print(
                     "indexed "
-                    f"objects={stats.objects} columns={stats.columns} "
-                    f"constraints={stats.constraints} indexes={stats.indexes} "
-                    f"dependencies={stats.dependencies} vectors={stats.vectors}"
+                    f"objects={indexed['objects']} columns={indexed['columns']} "
+                    f"constraints={indexed['constraints']} indexes={indexed['indexes']} "
+                    f"dependencies={indexed['dependencies']} vectors={indexed['vectors']}"
                 )
-            except Exception as exc:
-                message = f"failed indexing: {exc}"
-                mark_source_error(conn, source.id, message)
-                print(message, file=sys.stderr)
-                exit_code = 4
-                continue
-
-            try:
-                usage_path, usage_count = _refresh_usage_snapshot_for_source(
-                    source_name=source.name,
-                    source_dsn=source.dsn,
-                )
+            usage_snapshot = result.get("usage_snapshot")
+            if usage_snapshot:
                 print(
-                    f"usage snapshot refreshed: {source.name} "
-                    f"records={usage_count} path={usage_path}"
+                    f"usage snapshot refreshed: {result['source']} "
+                    f"records={usage_snapshot['records']} path={usage_snapshot['path']}"
                 )
-            except PostgresDependencyError as exc:
-                print(str(exc), file=sys.stderr)
-                return 2
-            except Exception as exc:
-                message = str(exc)
-                mark_source_error(conn, source.id, message)
-                print(message, file=sys.stderr)
-                exit_code = 4
-                continue
+            if result.get("error"):
+                print(str(result["error"]), file=sys.stderr)
 
-        return exit_code
+        return int(payload["exit_code"])
     finally:
         conn.close()
 
@@ -1230,6 +1192,8 @@ def cmd_mcp(args: argparse.Namespace) -> int:
             "--port",
             str(args.port),
         ]
+        if args.enable_update_tool:
+            cmd.append("--enable-update-tool")
         proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         _write_pid_file(paths.mcp_pid_file, proc.pid)
         print(f"started mcp daemon pid={proc.pid} host={args.host} port={args.port}")
@@ -1244,10 +1208,15 @@ def cmd_mcp(args: argparse.Namespace) -> int:
             print("health endpoint: GET /health, rpc endpoint: POST /mcp")
             print("codex/claude-code integration: set MCP server command to "
                   f"`qpg mcp --http --host {args.host} --port {args.port}`")
-            return serve_http(conn, host=args.host, port=args.port)
+            return serve_http(
+                conn,
+                host=args.host,
+                port=args.port,
+                enable_update_tool=args.enable_update_tool,
+            )
         print("qpg MCP stdio server started", file=sys.stderr)
         print("codex/claude-code integration: set MCP server command to `qpg mcp`", file=sys.stderr)
-        return serve_stdio(conn)
+        return serve_stdio(conn, enable_update_tool=args.enable_update_tool)
     finally:
         conn.close()
 
@@ -1440,6 +1409,11 @@ def build_parser() -> argparse.ArgumentParser:
     mcp_parser = subparsers.add_parser("mcp", help="run MCP server")
     mcp_parser.add_argument("--http", action="store_true")
     mcp_parser.add_argument("--daemon", action="store_true")
+    mcp_parser.add_argument(
+        "--enable-update-tool",
+        action="store_true",
+        help="expose the opt-in MCP source refresh tool qpg.update_source",
+    )
     mcp_parser.add_argument("--host", default="127.0.0.1")
     mcp_parser.add_argument("--port", type=int, default=8765)
     mcp_sub = mcp_parser.add_subparsers(dest="mcp_cmd")

@@ -7,7 +7,7 @@ import sys
 from qpg.mcp.protocol import handle_request
 
 
-def serve_stdio(conn: sqlite3.Connection) -> int:
+def serve_stdio(conn: sqlite3.Connection, *, enable_update_tool: bool = False) -> int:
     for raw_line in sys.stdin:
         line = raw_line.strip()
         if not line:
@@ -34,7 +34,7 @@ def serve_stdio(conn: sqlite3.Connection) -> int:
             sys.stdout.flush()
             continue
 
-        response = handle_request(conn, payload)
+        response = handle_request(conn, payload, enable_update_tool=enable_update_tool)
         if response is not None:
             sys.stdout.write(json.dumps(response) + "\n")
             sys.stdout.flush()

@@ -254,11 +254,19 @@ qpg mcp stop
 ```
 
 Exposed tools:
-- `qpg_search`
-- `qpg_deep_search`
-- `qpg_get`
-- `qpg_status`
-- `qpg_list_sources`
+- `qpg.search`
+- `qpg.deep_search`
+- `qpg.get`
+- `qpg.status`
+- `qpg.list_sources`
+
+Opt-in source refresh:
+
+```bash
+qpg mcp --enable-update-tool
+```
+
+Then call `qpg.update_source` with `{"source":"work"}`.
 
 ## Development
 

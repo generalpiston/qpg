@@ -59,7 +59,7 @@ def test_mcp_starts_without_initialized_model(
         raise VectorModelNotInitializedError("vector model is not initialized. Run `qpg init`.")
 
     monkeypatch.setattr(cli_mod, "require_vector_model", fail_require_model)
-    monkeypatch.setattr(cli_mod, "serve_stdio", lambda _conn: 0)
+    monkeypatch.setattr(cli_mod, "serve_stdio", lambda _conn, enable_update_tool=False: 0)
 
     code = cli_mod.main(["mcp"])
     assert code == 0

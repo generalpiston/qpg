@@ -9,8 +9,13 @@ Run MCP server:
 
 Default tools:
 
-- `qpg_search`
-- `qpg_deep_search`
-- `qpg_get`
-- `qpg_status`
-- `qpg_list_sources`
+- `qpg.search`
+- `qpg.deep_search`
+- `qpg.get`
+- `qpg.status`
+- `qpg.list_sources`
+
+Optional update tool:
+
+- Start MCP with `qpg mcp --enable-update-tool`
+- Call `qpg.update_source` with `{"source":"<name>"}` or `{"source":"<name>","skip_functions":true}`

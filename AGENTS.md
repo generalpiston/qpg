@@ -173,12 +173,15 @@ YAML keys are flat and stable:
 `qpg config` must expose effective configuration with secret values redacted.
 
 ## MCP Contract
-Expose only schema-index retrieval tools by default:
-- `qpg_search`
-- `qpg_deep_search`
-- `qpg_get`
-- `qpg_status`
-- `qpg_list_sources`
+Expose only schema-index tools by default:
+- `qpg.search`
+- `qpg.deep_search`
+- `qpg.get`
+- `qpg.status`
+- `qpg.list_sources`
+
+Optional admin tools must remain explicitly gated off by default. Current opt-in tool:
+- `qpg.update_source`
 
 No tool may execute arbitrary SQL or row queries in current line.
 
