@@ -176,6 +176,7 @@ Source also carries optional ingestion filters:
 
 ### Context
 Context is operator-authored meaning layered on top of schema shape.
+It can also be added via explicit tooling workflows (for example OpenAI table summarization with optional usage-snapshot evidence, or legacy index-usage ingestion), but it remains retrieval guidance rather than source-of-truth schema metadata.
 
 Targets:
 - Source-level: `qpg://work`
@@ -254,6 +255,10 @@ Rationale:
 ### Runtime configuration policy
 Decision:
 - Runtime settings resolve via `pydantic-settings`.
+- PostgreSQL connection startup timeout may come from:
+  - environment variable (`QPG_PG_CONNECT_TIMEOUT_SEC`)
+  - YAML file (`pg_connect_timeout_sec` in `${XDG_CONFIG_HOME:-~/.config}/qpg/config.yaml`)
+  - default `1`
 - OpenAI configuration may come from:
   - CLI flags (`context generate --api-key/--model/--base-url`)
   - environment variables (`QPG_OPENAI_*`, then `OPENAI_*`)
@@ -319,14 +324,16 @@ HTTP --->| qpg mcp --http    |<---------------- clients
 ```
 
 MCP tools:
-- `qpg_search`
-- `qpg_deep_search`
-- `qpg_get`
-- `qpg_status`
-- `qpg_list_sources`
+- `qpg.search`
+- `qpg.deep_search`
+- `qpg.get`
+- `qpg.status`
+- `qpg.list_sources`
 
 Constraint:
-- MCP exposes retrieval/status only, not arbitrary SQL execution.
+- MCP exposes schema-index tools only, not arbitrary SQL execution.
+- `qpg.update_source` is opt-in and disabled unless the MCP server starts with `--enable-update-tool`.
+- MCP startup performs a best-effort background refresh of configured sources using the same guarded update behavior as `qpg update`, and logs refresh failures without aborting server startup.
 
 ## Component Map
 

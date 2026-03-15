@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 import qpg.cli as cli_mod
+from qpg.db_sqlite import connect_sqlite, ensure_schema
 from qpg.index.vec import VectorModelNotInitializedError
 
 
@@ -26,12 +27,13 @@ def test_vector_commands_require_initialized_model(
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
 
     if argv == ["update"]:
-        assert (
-            cli_mod.main(
-                ["source", "add", "postgresql://user@host:5432/db", "--name", "work"]
-            )
-            == 0
-        )
+        db_path = tmp_path / "cache" / "qpg" / "index.sqlite"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = connect_sqlite(db_path)
+        ensure_schema(conn)
+        conn.execute("INSERT INTO sources(name, dsn) VALUES(?, ?)", ("work", "postgresql://user@host:5432/db"))
+        conn.commit()
+        conn.close()
         argv = ["update", "--source", "work"]
 
     def fail_require_model() -> Path:
@@ -57,7 +59,7 @@ def test_mcp_starts_without_initialized_model(
         raise VectorModelNotInitializedError("vector model is not initialized. Run `qpg init`.")
 
     monkeypatch.setattr(cli_mod, "require_vector_model", fail_require_model)
-    monkeypatch.setattr(cli_mod, "serve_stdio", lambda _conn: 0)
+    monkeypatch.setattr(cli_mod, "serve_stdio", lambda _conn, enable_update_tool=False: 0)
 
     code = cli_mod.main(["mcp"])
     assert code == 0

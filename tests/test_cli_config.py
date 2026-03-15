@@ -34,6 +34,7 @@ def test_config_plain_unset_key(monkeypatch, tmp_path: Path, capsys) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.delenv("QPG_OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("QPG_PG_CONNECT_TIMEOUT_SEC", raising=False)
 
     code = cli_mod.main(["config"])
     assert code == 0
@@ -41,6 +42,7 @@ def test_config_plain_unset_key(monkeypatch, tmp_path: Path, capsys) -> None:
     out = capsys.readouterr().out
     assert f"config_yaml: {(tmp_path / 'config' / 'qpg' / 'config.yaml').resolve()}" in out
     assert "config_yaml_exists: False" in out
+    assert "pg_connect_timeout_sec: 1" in out
     assert "openai_api_key: unset" in out
     assert "openai_model: gpt-5-nano" in out
     assert "openai_base_url: https://api.openai.com/v1" in out
@@ -83,6 +85,7 @@ def test_config_json_reads_yaml_config_file(monkeypatch, tmp_path: Path, capsys)
     cfg.parent.mkdir(parents=True, exist_ok=True)
     cfg.write_text(
         (
+            "pg_connect_timeout_sec: 2\n"
             "openai_api_key: sk-from-yaml\n"
             "openai_model: gpt-4.1-nano\n"
             "openai_base_url: https://yaml.example.test/v1\n"
@@ -94,10 +97,24 @@ def test_config_json_reads_yaml_config_file(monkeypatch, tmp_path: Path, capsys)
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["config_yaml_exists"] is True
+    assert payload["pg_connect_timeout_sec"] == 2
     assert payload["openai"]["api_key_configured"] is True
     assert payload["openai"]["api_key_redacted"] == "sk-...ml"
     assert payload["openai"]["model"] == "gpt-4.1-nano"
     assert payload["openai"]["base_url"] == "https://yaml.example.test/v1"
+
+
+def test_config_json_reads_connect_timeout_from_env(monkeypatch, tmp_path: Path, capsys) -> None:
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("QPG_PG_CONNECT_TIMEOUT_SEC", "2")
+
+    code = cli_mod.main(["config", "--json"])
+    assert code == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["pg_connect_timeout_sec"] == 2
 
 
 def test_config_env_overrides_yaml(monkeypatch, tmp_path: Path, capsys) -> None:

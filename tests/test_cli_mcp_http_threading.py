@@ -25,7 +25,14 @@ def test_mcp_http_uses_thread_safe_sqlite_connection(monkeypatch, tmp_path: Path
         conn.commit()
         return True
 
-    def fake_serve_http(conn: sqlite3.Connection, *, host: str = "127.0.0.1", port: int = 8765) -> int:
+    def fake_serve_http(
+        conn: sqlite3.Connection,
+        *,
+        host: str = "127.0.0.1",
+        port: int = 8765,
+        enable_update_tool: bool = False,
+    ) -> int:
+        assert enable_update_tool is False
         return 0
 
     monkeypatch.setattr(cli_mod, "connect_sqlite", fake_connect)
@@ -33,7 +40,14 @@ def test_mcp_http_uses_thread_safe_sqlite_connection(monkeypatch, tmp_path: Path
     monkeypatch.setattr(cli_mod, "require_vector_model", lambda: Path("/tmp/model"))
     monkeypatch.setattr(cli_mod, "serve_http", fake_serve_http)
 
-    args = argparse.Namespace(http=True, daemon=False, host="127.0.0.1", port=8765, mcp_cmd=None)
+    args = argparse.Namespace(
+        http=True,
+        daemon=False,
+        enable_update_tool=False,
+        host="127.0.0.1",
+        port=8765,
+        mcp_cmd=None,
+    )
     code = cli_mod.cmd_mcp(args)
 
     assert code == 0

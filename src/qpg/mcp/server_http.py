@@ -34,6 +34,11 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         server = cast(Any, self.server)
         return cast(sqlite3.Connection, server.sqlite_conn)
 
+    @property
+    def _enable_update_tool(self) -> bool:
+        server = cast(Any, self.server)
+        return bool(getattr(server, "enable_update_tool", False))
+
     def do_GET(self) -> None:
         if self.path == "/health":
             self._write_json(HTTPStatus.OK, {"status": "ok"})
@@ -50,13 +55,20 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             self._write_json(HTTPStatus.BAD_REQUEST, {"error": "invalid JSON payload"})
             return
 
-        response = handle_request(self._conn, payload)
+        response = handle_request(self._conn, payload, enable_update_tool=self._enable_update_tool)
         self._write_json(HTTPStatus.OK, response)
 
 
-def serve_http(conn: sqlite3.Connection, *, host: str = "127.0.0.1", port: int = 8765) -> int:
+def serve_http(
+    conn: sqlite3.Connection,
+    *,
+    host: str = "127.0.0.1",
+    port: int = 8765,
+    enable_update_tool: bool = False,
+) -> int:
     server = ThreadingHTTPServer((host, port), MCPHTTPHandler)
     server.sqlite_conn = conn  # type: ignore[attr-defined]
+    server.enable_update_tool = enable_update_tool  # type: ignore[attr-defined]
     try:
         server.serve_forever()
     except KeyboardInterrupt:

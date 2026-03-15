@@ -20,22 +20,6 @@ It does **not**:
 - Run `EXPLAIN`
 - Modify database state
 
-## Install and Run
-
-```bash
-uv sync
-uv run qpg init
-uv run qpg --help
-uv run pytest
-```
-
-Install as a tool:
-
-```bash
-uv tool install .
-qpg --help
-```
-
 ## Security Model
 
 On PostgreSQL connect, qpg enforces:
@@ -76,7 +60,23 @@ Schema includes:
 - `object_vectors` (sqlite-vec compatible storage)
 - `llm_cache`
 
-## Commands
+## Quick Start
+
+Install and verify:
+
+```bash
+uv sync
+uv run qpg init
+uv run qpg --help
+uv run pytest
+```
+
+Optional tool install:
+
+```bash
+uv tool install .
+qpg --help
+```
 
 Source management:
 
@@ -86,6 +86,12 @@ qpg source list
 qpg source rm work
 qpg source rename work prod
 ```
+
+`qpg source add` now performs an immediate auto-refresh for that source:
+- schema index refresh (`update` behavior)
+- usage snapshot refresh (`usage refresh` behavior)
+- context generation is still explicit-only
+- auto-refresh is best-effort; source creation still succeeds if refresh fails
 
 Configuration:
 
@@ -111,28 +117,56 @@ Context management:
 ```bash
 qpg context add qpg://work "Production billing DB"
 qpg context add qpg://work/public "Critical payment schema"
-qpg context generate --source work --api-key "$OPENAI_API_KEY"
+qpg usage refresh --source work
+qpg context generate --source work --use-latest-usage --api-key "$OPENAI_API_KEY"
+# legacy index-usage ingestion mode (JSON or JSONL):
+cat index-usage.jsonl | qpg context generate --from index-usage --source work --input - --unused-days 14 --replace-managed
 qpg context list
 qpg context rm 1
 ```
 
 `qpg context generate` is an explicit OpenAI-powered workflow that drafts table-level context from indexed schema metadata (table definition/comments + columns). Generated entries are written to the same `contexts` table and target `qpg://<source>/<schema.table>`, so the same context is inherited by the table and its column objects. Generation is conservative: if it cannot make a reasonable high-level inference, it skips that table instead of guessing.
 
-OpenAI settings are configurable via environment:
+`qpg usage refresh --source <source>` captures index usage stats from PostgreSQL and writes a local snapshot at `${XDG_STATE_HOME:-~/.local/state}/qpg/usage/<source>.jsonl`.
+
+`qpg context generate --use-latest-usage` loads that snapshot and includes matching table-level index usage signals as additional OpenAI prompt evidence.
+
+`qpg context generate --from index-usage` ingests operator-provided usage stats and writes managed context on matching index objects (targeted by object id fragment, for example `qpg://work#<object_id>`). This is designed for operational signals like "unused for 2+ weeks" and keeps manual context untouched.
+
+Supported input formats for `--from index-usage`:
+- JSON array of objects
+- JSONL (one object per line)
+
+Required fields per object:
+- `schema`
+- `table` (or `table_name`)
+- `index` (or `index_name`)
+- `unused_days`
+
+Optional fields:
+- `source` (records with non-matching source are skipped)
+- `as_of`
+- `idx_scan`
+
+Runtime settings are configurable via environment:
+- `QPG_PG_CONNECT_TIMEOUT_SEC`
 - `QPG_OPENAI_API_KEY` (or `OPENAI_API_KEY`)
 - `QPG_OPENAI_MODEL` (or `OPENAI_MODEL`)
 - `QPG_OPENAI_BASE_URL` (or `OPENAI_BASE_URL`)
 
-OpenAI settings are also configurable via YAML:
+Runtime settings are also configurable via YAML:
 - `${XDG_CONFIG_HOME:-~/.config}/qpg/config.yaml`
 
 Example `config.yaml`:
 
 ```yaml
+pg_connect_timeout_sec: 1
 openai_api_key: "sk-..."
 openai_model: "gpt-5-nano"
 openai_base_url: "https://api.openai.com/v1"
 ```
+
+`pg_connect_timeout_sec` controls how long qpg waits to establish a PostgreSQL connection before failing fast. Default: `1`.
 
 Precedence:
 1. CLI flags (`--api-key`, `--model`, `--base-url`)
@@ -156,6 +190,25 @@ qpg update --source work
 qpg status
 qpg cleanup
 qpg repair
+```
+
+`qpg update` also refreshes usage snapshots for updated sources.
+
+Typical setup flow:
+
+```bash
+uv run qpg auth check --source work
+uv run qpg update --source work
+uv run qpg status
+```
+
+Context can improve retrieval quality:
+
+```bash
+uv run qpg context add qpg://work "Production billing database"
+uv run qpg context add qpg://work/public "Core payment schema"
+uv run qpg context list
+uv run qpg update --source work
 ```
 
 Search:
@@ -221,12 +274,34 @@ qpg mcp --http --daemon
 qpg mcp stop
 ```
 
+On startup, MCP best-effort refreshes configured sources in the background using the same guarded update behavior as `qpg update`. If a source cannot be reached, the server still starts and logs the refresh error to stderr.
+
 Exposed tools:
-- `qpg_search`
-- `qpg_deep_search`
-- `qpg_get`
-- `qpg_status`
-- `qpg_list_sources`
+- `qpg.search`
+- `qpg.deep_search`
+- `qpg.get`
+- `qpg.status`
+- `qpg.list_sources`
+
+Opt-in source refresh:
+
+```bash
+qpg mcp --enable-update-tool
+```
+
+Then call `qpg.update_source` with `{"source":"work"}`.
+
+Example MCP HTTP calls:
+
+```bash
+curl -s http://127.0.0.1:8765/health
+curl -s -X POST http://127.0.0.1:8765/mcp \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"example","version":"1.0.0"}}}'
+curl -s -X POST http://127.0.0.1:8765/mcp \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"qpg_status","arguments":{}}}'
+```
 
 ## Development
 

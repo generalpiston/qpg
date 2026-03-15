@@ -12,6 +12,7 @@ from qpg.query.expand import expand_query
 from qpg.query.rerank import rerank_with_hook
 from qpg.query.rrf import reciprocal_rank_fusion
 from qpg.sources import list_sources
+from qpg.update import NoSourcesConfiguredError, update_sources
 
 
 class MCPError(RuntimeError):
@@ -26,9 +27,9 @@ SUPPORTED_PROTOCOL_VERSIONS = (
 )
 
 
-TOOL_SCHEMAS: list[dict[str, Any]] = [
+BASE_TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
-        "name": "qpg_search",
+        "name": "qpg.search",
         "description": "Run lexical search over indexed PostgreSQL schema metadata.",
         "inputSchema": {
             "type": "object",
@@ -44,7 +45,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "qpg_deep_search",
+        "name": "qpg.deep_search",
         "description": "Run blended lexical+vector schema search with deterministic RRF fusion.",
         "inputSchema": {
             "type": "object",
@@ -57,7 +58,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "qpg_get",
+        "name": "qpg.get",
         "description": "Get a detailed metadata payload for one schema object by fqname or id.",
         "inputSchema": {
             "type": "object",
@@ -70,7 +71,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "qpg_status",
+        "name": "qpg.status",
         "description": "Return index status and object counts by kind.",
         "inputSchema": {
             "type": "object",
@@ -79,7 +80,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "qpg_list_sources",
+        "name": "qpg.list_sources",
         "description": "List configured PostgreSQL sources in the local index.",
         "inputSchema": {
             "type": "object",
@@ -88,6 +89,27 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
 ]
+
+UPDATE_TOOL_SCHEMA: dict[str, Any] = {
+    "name": "qpg.update_source",
+    "description": "Refresh one configured source into the local schema index.",
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "source": {"type": "string"},
+            "skip_functions": {"type": "boolean", "default": False},
+        },
+        "required": ["source"],
+        "additionalProperties": False,
+    },
+}
+
+
+def tool_schemas(*, enable_update_tool: bool = False) -> list[dict[str, Any]]:
+    tools = list(BASE_TOOL_SCHEMAS)
+    if enable_update_tool:
+        tools.append(UPDATE_TOOL_SCHEMA)
+    return tools
 
 
 def _jsonrpc_result(request_id: Any, result: Any) -> dict[str, Any]:
@@ -143,10 +165,16 @@ def _deep_search(conn: sqlite3.Connection, query: str, limit: int) -> list[dict[
     return fused[:limit]
 
 
-def handle_tool_call(conn: sqlite3.Connection, tool: str, args: dict[str, Any] | None = None) -> Any:
+def handle_tool_call(
+    conn: sqlite3.Connection,
+    tool: str,
+    args: dict[str, Any] | None = None,
+    *,
+    enable_update_tool: bool = False,
+) -> Any:
     args = args or {}
 
-    if tool == "qpg_search":
+    if tool == "qpg.search":
         return search_fts(
             conn,
             query=str(args.get("query", "")),
@@ -156,22 +184,22 @@ def handle_tool_call(conn: sqlite3.Connection, tool: str, args: dict[str, Any] |
             kind=args.get("kind"),
         )
 
-    if tool == "qpg_deep_search":
+    if tool == "qpg.deep_search":
         return _deep_search(conn, str(args.get("query", "")), int(args.get("limit", 10)))
 
-    if tool == "qpg_get":
+    if tool == "qpg.get":
         ref = str(args.get("ref", ""))
         if not ref:
-            raise MCPError("qpg_get requires 'ref'")
+            raise MCPError("qpg.get requires 'ref'")
         try:
             return get_object_payload(conn, ref, source=args.get("source"))
         except ObjectNotFoundError as exc:
             raise MCPError(str(exc)) from exc
 
-    if tool == "qpg_status":
+    if tool == "qpg.status":
         return _status_payload(conn)
 
-    if tool == "qpg_list_sources":
+    if tool == "qpg.list_sources":
         return [
             {
                 "name": source.name,
@@ -184,26 +212,30 @@ def handle_tool_call(conn: sqlite3.Connection, tool: str, args: dict[str, Any] |
             for source in list_sources(conn)
         ]
 
+    if tool == "qpg.update_source":
+        if not enable_update_tool:
+            raise MCPError("qpg.update_source is disabled; restart MCP with --enable-update-tool")
+        source = str(args.get("source", "")).strip()
+        if not source:
+            raise MCPError("qpg.update_source requires 'source'")
+        try:
+            return update_sources(
+                conn,
+                source_name=source,
+                skip_functions=bool(args.get("skip_functions", False)),
+            )
+        except NoSourcesConfiguredError as exc:
+            raise MCPError(str(exc)) from exc
+
     raise MCPError(f"unknown tool: {tool}")
 
 
-def _handle_legacy_request(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[str, Any]:
-    request_id = payload.get("id")
-    tool = payload.get("tool")
-    args = payload.get("args")
-
-    if not isinstance(tool, str):
-        return {"id": request_id, "error": "payload must include string field 'tool'"}
-
-    try:
-        result = handle_tool_call(conn, tool, args if isinstance(args, dict) else None)
-    except Exception as exc:
-        return {"id": request_id, "error": str(exc)}
-
-    return {"id": request_id, "result": result}
-
-
-def _handle_mcp_request(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[str, Any] | None:
+def _handle_mcp_request(
+    conn: sqlite3.Connection,
+    payload: dict[str, Any],
+    *,
+    enable_update_tool: bool = False,
+) -> dict[str, Any] | None:
     request_id = payload.get("id")
     method = payload.get("method")
     if not isinstance(method, str):
@@ -228,7 +260,7 @@ def _handle_mcp_request(conn: sqlite3.Connection, payload: dict[str, Any]) -> di
                 "capabilities": {"tools": {"listChanged": False}},
                 "serverInfo": {"name": "qpg", "version": __version__},
                 "instructions": (
-                    "qpg exposes PostgreSQL schema-index retrieval tools only. "
+                    "qpg exposes PostgreSQL schema-index tools only. "
                     "It never executes arbitrary SQL or reads table row values."
                 ),
             },
@@ -238,7 +270,7 @@ def _handle_mcp_request(conn: sqlite3.Connection, payload: dict[str, Any]) -> di
         return _jsonrpc_result(request_id, {})
 
     if method == "tools/list":
-        return _jsonrpc_result(request_id, {"tools": TOOL_SCHEMAS})
+        return _jsonrpc_result(request_id, {"tools": tool_schemas(enable_update_tool=enable_update_tool)})
 
     if method == "tools/call":
         tool_name = params.get("name")
@@ -248,7 +280,12 @@ def _handle_mcp_request(conn: sqlite3.Connection, payload: dict[str, Any]) -> di
         if arguments is not None and not isinstance(arguments, dict):
             return _jsonrpc_error(request_id, -32602, "Invalid params: 'arguments' must be an object")
         try:
-            result = handle_tool_call(conn, tool_name, arguments)
+            result = handle_tool_call(
+                conn,
+                tool_name,
+                arguments,
+                enable_update_tool=enable_update_tool,
+            )
             return _jsonrpc_result(
                 request_id,
                 {
@@ -269,7 +306,10 @@ def _handle_mcp_request(conn: sqlite3.Connection, payload: dict[str, Any]) -> di
     return _jsonrpc_error(request_id, -32601, f"Method not found: {method}")
 
 
-def handle_request(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[str, Any] | None:
-    if "method" in payload:
-        return _handle_mcp_request(conn, payload)
-    return _handle_legacy_request(conn, payload)
+def handle_request(
+    conn: sqlite3.Connection,
+    payload: dict[str, Any],
+    *,
+    enable_update_tool: bool = False,
+) -> dict[str, Any] | None:
+    return _handle_mcp_request(conn, payload, enable_update_tool=enable_update_tool)

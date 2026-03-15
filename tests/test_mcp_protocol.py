@@ -34,7 +34,7 @@ def test_initialize_negotiates_protocol_and_reports_tools_capability() -> None:
         conn.close()
 
 
-def test_initialize_echoes_unknown_protocol_version_for_compatibility() -> None:
+def test_initialize_echoes_unknown_protocol_version() -> None:
     conn = _db()
     try:
         response = handle_request(
@@ -58,12 +58,13 @@ def test_tools_list_and_call_status() -> None:
         listed = handle_request(conn, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         assert listed is not None
         names = [tool["name"] for tool in listed["result"]["tools"]]
-        assert "qpg_status" in names
-        assert "qpg_get" in names
+        assert "qpg.status" in names
+        assert "qpg.get" in names
+        assert "qpg.update_source" not in names
 
         called = handle_request(
             conn,
-            {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "qpg_status", "arguments": {}}},
+            {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "qpg.status", "arguments": {}}},
         )
         assert called is not None
         assert called["result"]["isError"] is False
@@ -82,10 +83,65 @@ def test_initialized_notification_has_no_response() -> None:
         conn.close()
 
 
-def test_legacy_tool_payload_still_supported() -> None:
+def test_update_tool_is_hidden_by_default() -> None:
     conn = _db()
     try:
-        response = handle_request(conn, {"id": 9, "tool": "qpg_status", "args": {}})
-        assert response == {"id": 9, "result": {"sources": 0, "objects": 0, "by_kind": []}}
+        response = handle_request(
+            conn,
+            {
+                "jsonrpc": "2.0",
+                "id": 13,
+                "method": "tools/call",
+                "params": {"name": "qpg.update_source", "arguments": {"source": "work"}},
+            },
+        )
+        assert response is not None
+        assert response["result"]["isError"] is True
+        assert (
+            response["result"]["content"][0]["text"]
+            == "qpg.update_source is disabled; restart MCP with --enable-update-tool"
+        )
+    finally:
+        conn.close()
+
+
+def test_update_tool_can_be_enabled(monkeypatch) -> None:
+    conn = _db()
+    try:
+        monkeypatch.setattr(
+            "qpg.mcp.protocol.update_sources",
+            lambda _conn, *, source_name, skip_functions=False: {
+                "source_count": 1,
+                "results": [
+                    {
+                        "source": source_name,
+                        "ok": True,
+                        "warnings": [],
+                        "indexed": None,
+                        "usage_snapshot": None,
+                        "error": None,
+                    }
+                ],
+                "exit_code": 0,
+            },
+        )
+        listed = handle_request(conn, {"jsonrpc": "2.0", "id": 14, "method": "tools/list"}, enable_update_tool=True)
+        assert listed is not None
+        names = [tool["name"] for tool in listed["result"]["tools"]]
+        assert "qpg.update_source" in names
+
+        called = handle_request(
+            conn,
+            {
+                "jsonrpc": "2.0",
+                "id": 15,
+                "method": "tools/call",
+                "params": {"name": "qpg.update_source", "arguments": {"source": "work"}},
+            },
+            enable_update_tool=True,
+        )
+        assert called is not None
+        assert called["result"]["isError"] is False
+        assert called["result"]["structuredContent"]["results"][0]["source"] == "work"
     finally:
         conn.close()
