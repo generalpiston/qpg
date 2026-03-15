@@ -7,6 +7,13 @@ Run MCP server:
 - HTTP daemon: `qpg mcp --http --daemon`
 - Stop daemon: `qpg mcp stop`
 
+Startup behavior:
+
+- MCP starts a best-effort background refresh of configured sources during startup.
+- Startup refresh uses the same guarded update path and defaults as `qpg update`.
+- If a source refresh fails, MCP still starts and logs the error to stderr.
+- If no sources are configured, MCP starts without error.
+
 Default tools:
 
 - `qpg.search`

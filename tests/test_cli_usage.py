@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import qpg.cli as cli_mod
+import qpg.update as update_mod
 from qpg.config import ensure_dirs, get_paths
 from qpg.context_usage import IndexUsageRecord
 from qpg.db_sqlite import connect_sqlite, ensure_schema
@@ -97,17 +98,17 @@ def test_update_also_refreshes_usage_snapshot(monkeypatch, tmp_path: Path, capsy
         def __exit__(self, exc_type, exc, tb) -> None:
             return None
 
-    monkeypatch.setattr(cli_mod, "require_vector_model", lambda: tmp_path / "cache" / "qpg" / "models" / "m")
-    monkeypatch.setattr(cli_mod, "connect_pg", lambda _dsn: _FakePgContext())
-    monkeypatch.setattr(cli_mod, "introspect_schema", lambda _conn, include_functions: IntrospectionBundle())
-    monkeypatch.setattr(cli_mod, "apply_filters", lambda bundle, **_kwargs: bundle)
+    monkeypatch.setattr(update_mod, "require_vector_model", lambda: tmp_path / "cache" / "qpg" / "models" / "m")
+    monkeypatch.setattr(update_mod, "connect_pg", lambda _dsn, **_kwargs: _FakePgContext())
+    monkeypatch.setattr(update_mod, "introspect_schema", lambda _conn, include_functions: IntrospectionBundle())
+    monkeypatch.setattr(update_mod, "apply_filters", lambda bundle, **_kwargs: bundle)
     monkeypatch.setattr(
-        cli_mod,
+        update_mod,
         "update_source_index",
         lambda _conn, **_kwargs: UpdateStats(objects=0, columns=0, constraints=0, indexes=0, dependencies=0, vectors=0),
     )
     monkeypatch.setattr(
-        cli_mod,
+        update_mod,
         "collect_index_usage_records",
         lambda _conn, *, source_name: [
             IndexUsageRecord(

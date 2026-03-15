@@ -41,9 +41,21 @@ def _collect_sources(conn: sqlite3.Connection, source_name: str | None) -> list[
     return list_sources(conn)
 
 
-def _refresh_usage_snapshot_for_source(*, source_name: str, source_dsn: str) -> tuple[Path, int]:
+def _refresh_usage_snapshot_for_source(
+    *,
+    source_name: str,
+    source_dsn: str,
+    connect_timeout_sec: int | None = None,
+    statement_timeout: str = "5s",
+    idle_in_transaction_timeout: str = "10s",
+) -> tuple[Path, int]:
     try:
-        with connect_pg(source_dsn) as pg_conn:
+        with connect_pg(
+            source_dsn,
+            connect_timeout_sec=connect_timeout_sec,
+            statement_timeout=statement_timeout,
+            idle_in_transaction_timeout=idle_in_transaction_timeout,
+        ) as pg_conn:
             records = collect_index_usage_records(pg_conn, source_name=source_name)
     except PostgresDependencyError:
         raise
@@ -61,6 +73,10 @@ def update_sources(
     *,
     source_name: str | None = None,
     skip_functions: bool = False,
+    connect_timeout_sec: int | None = None,
+    statement_timeout: str = "5s",
+    idle_in_transaction_timeout: str = "10s",
+    include_usage_snapshot: bool = True,
 ) -> dict[str, Any]:
     sources = _collect_sources(conn, source_name)
     if not sources:
@@ -76,7 +92,12 @@ def update_sources(
         results.append(result)
 
         try:
-            with connect_pg(source.dsn) as pg_conn:
+            with connect_pg(
+                source.dsn,
+                connect_timeout_sec=connect_timeout_sec,
+                statement_timeout=statement_timeout,
+                idle_in_transaction_timeout=idle_in_transaction_timeout,
+            ) as pg_conn:
                 bundle = introspect_schema(pg_conn, include_functions=not skip_functions)
                 bundle = apply_filters(
                     bundle,
@@ -112,10 +133,17 @@ def update_sources(
             exit_code = 4
             continue
 
+        if not include_usage_snapshot:
+            result.ok = True
+            continue
+
         try:
             usage_path, usage_count = _refresh_usage_snapshot_for_source(
                 source_name=source.name,
                 source_dsn=source.dsn,
+                connect_timeout_sec=connect_timeout_sec,
+                statement_timeout=statement_timeout,
+                idle_in_transaction_timeout=idle_in_transaction_timeout,
             )
             result.usage_snapshot = {"path": str(usage_path), "records": usage_count}
             result.ok = True

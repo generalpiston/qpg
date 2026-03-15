@@ -38,6 +38,11 @@ def _looks_like_dotenv(path: Path) -> bool:
 class QPGSettings(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore", populate_by_name=True)
 
+    pg_connect_timeout_sec: int = Field(
+        default=1,
+        ge=1,
+        validation_alias="QPG_PG_CONNECT_TIMEOUT_SEC",
+    )
     openai_api_key: str | None = Field(
         default=None,
         validation_alias=AliasChoices("QPG_OPENAI_API_KEY", "OPENAI_API_KEY"),
@@ -82,6 +87,12 @@ class OpenAISettings:
     api_key: str | None
     base_url: str
     model: str
+
+
+def resolve_pg_connect_timeout_sec(*, override: int | None = None) -> int:
+    if override is not None:
+        return override
+    return int(QPGSettings().pg_connect_timeout_sec)
 
 
 def _clean_optional(value: str | None) -> str | None:

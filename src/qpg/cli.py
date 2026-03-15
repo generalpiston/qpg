@@ -6,6 +6,7 @@ import signal
 import sqlite3
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -47,7 +48,7 @@ from qpg.query.rerank import RerankHookError, rerank_with_hook
 from qpg.query.rrf import reciprocal_rank_fusion
 from qpg.schema.introspect import apply_filters, introspect_schema
 from qpg.schema.privilege_check import check_privileges, format_privilege_report
-from qpg.settings import config_yaml_path, resolve_openai_settings
+from qpg.settings import config_yaml_path, resolve_openai_settings, resolve_pg_connect_timeout_sec
 from qpg.sources import (
     SourceExistsError,
     SourceNotFoundError,
@@ -184,6 +185,38 @@ def _refresh_usage_snapshot_for_source(
     output_path = usage_snapshot_path(paths, source_name)
     write_usage_snapshot_records(output_path, records)
     return output_path, len(records)
+
+
+def _run_mcp_startup_refresh(conn: sqlite3.Connection) -> None:
+    try:
+        payload = update_sources(conn)
+    except NoSourcesConfiguredError:
+        return
+    except Exception as exc:
+        print(f"warning: MCP startup source refresh failed: {exc}", file=sys.stderr)
+        return
+
+    for result in payload.get("results", []):
+        source = str(result.get("source", "?"))
+        for warning in result.get("warnings", []):
+            print(f"warning: source '{source}' refresh warning: {warning}", file=sys.stderr)
+        error = result.get("error")
+        if error:
+            print(f"warning: source '{source}' refresh failed: {error}", file=sys.stderr)
+
+
+def _best_effort_mcp_startup_refresh() -> None:
+    conn = _with_db(check_same_thread=False)
+    try:
+        _run_mcp_startup_refresh(conn)
+    finally:
+        conn.close()
+
+
+def _start_mcp_startup_refresh() -> threading.Thread:
+    thread = threading.Thread(target=_best_effort_mcp_startup_refresh, name="qpg-mcp-startup-refresh", daemon=True)
+    thread.start()
+    return thread
 
 
 def cmd_source(args: argparse.Namespace) -> int:
@@ -774,10 +807,12 @@ def cmd_init(args: argparse.Namespace) -> int:
 
 def cmd_config(args: argparse.Namespace) -> int:
     openai = resolve_openai_settings()
+    pg_connect_timeout_sec = resolve_pg_connect_timeout_sec()
     yaml_path = config_yaml_path()
     payload = {
         "config_yaml_path": str(yaml_path),
         "config_yaml_exists": yaml_path.exists(),
+        "pg_connect_timeout_sec": pg_connect_timeout_sec,
         "openai": {
             "api_key_configured": bool(openai.api_key),
             "api_key_redacted": redact_secret(openai.api_key),
@@ -791,6 +826,7 @@ def cmd_config(args: argparse.Namespace) -> int:
         openai_payload = payload["openai"]
         print(f"config_yaml: {payload['config_yaml_path']}")
         print(f"config_yaml_exists: {payload['config_yaml_exists']}")
+        print(f"pg_connect_timeout_sec: {payload['pg_connect_timeout_sec']}")
         if openai_payload["api_key_configured"]:
             print(f"openai_api_key: set ({openai_payload['api_key_redacted']})")
         else:
@@ -1201,6 +1237,7 @@ def cmd_mcp(args: argparse.Namespace) -> int:
               f"{args.host} --port {args.port}`")
         return 0
 
+    _start_mcp_startup_refresh()
     conn = _with_db(check_same_thread=not args.http)
     try:
         if args.http:
