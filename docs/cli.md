@@ -1,5 +1,7 @@
 # CLI Reference
 
+See the [canonical specification](spec.md) for normative command and safety behavior.
+
 `qpg` command groups:
 
 - `init`

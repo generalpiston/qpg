@@ -1,5 +1,7 @@
 # MCP
 
+See the [canonical specification](spec.md) for normative MCP and security behavior.
+
 Run MCP server:
 
 - Stdio: `qpg mcp`

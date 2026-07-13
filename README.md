@@ -2,7 +2,7 @@
 
 `qpg` is a local-first CLI to index and query PostgreSQL schema metadata, plus explicitly bounded transient row queries.
 
-Full docs live in [`docs/`](docs/README.md).
+Full docs live in [`docs/`](docs/README.md). The normative behavior contract is [`docs/spec.md`](docs/spec.md).
 
 It indexes:
 - Schemas

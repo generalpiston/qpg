@@ -1,5 +1,7 @@
 # Configuration
 
+See the [canonical specification](spec.md) for normative configuration precedence and defaults.
+
 ## Effective Precedence
 
 1. CLI flags (where applicable, for example `context generate --api-key/--model/--base-url`)

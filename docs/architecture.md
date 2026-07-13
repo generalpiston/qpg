@@ -1,5 +1,8 @@
 # Architecture
 
+Normative behavior is defined in [`spec.md`](spec.md); this document explains system structure and
+data flow.
+
 ## Overview
 `qpg` is a local-first system for indexing and querying **PostgreSQL schema metadata**.
 

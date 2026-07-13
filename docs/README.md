@@ -1,5 +1,6 @@
 # qpg Docs
 
+- [Canonical Specification](spec.md)
 - [Architecture](architecture.md)
 - [CLI Reference](cli.md)
 - [Configuration](configuration.md)
