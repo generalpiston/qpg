@@ -1,6 +1,6 @@
 # qpg
 
-`qpg` is a local-first CLI to index and query PostgreSQL **schema metadata** (DDL structure only).
+`qpg` is a local-first CLI to index and query PostgreSQL schema metadata, plus explicitly bounded transient row queries.
 
 Full docs live in [`docs/`](docs/README.md).
 
@@ -15,9 +15,9 @@ It indexes:
 - Functions/procedures
 
 It does **not**:
-- Query table rows
+- Run unrestricted table-row queries
 - Execute arbitrary SQL
-- Run `EXPLAIN`
+- Expose `EXPLAIN` or query-planning controls to users
 - Modify database state
 
 ## Security Model
@@ -282,6 +282,14 @@ Exposed tools:
 - `qpg.get`
 - `qpg.status`
 - `qpg.list_sources`
+
+Opt-in bounded row access:
+
+```bash
+qpg mcp --enable-query-tool
+```
+
+This exposes `qpg.query_rows`, which supports only exact primary-key lookups and ascending keyset pages on eligible indexed base tables. Returned rows are never stored in the local index.
 
 Opt-in source refresh:
 

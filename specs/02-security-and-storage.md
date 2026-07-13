@@ -40,6 +40,16 @@ Prohibited by default:
 
 Even if a role has write-capable grants, `qpg` MUST still be unable to write through its own PostgreSQL sessions because readonly session guards are mandatory.
 
+### Bounded row queries
+
+Row queries MUST use structured inputs for one indexed base table only. A table is eligible only when it has one indexed, non-null, single-column primary key of a supported scalar type. Joins, views, aggregates, subqueries, expressions, functions, aliases, arbitrary SQL, filters, user-selected ordering, offsets, and `SELECT *` MUST be rejected.
+
+The only allowed operations are a primary-key equality lookup with an effective limit of one and ascending keyset pagination on that same key with a limit from 1 through 100. Requested result columns MUST be explicit, unique, supported scalar types; unbounded or complex types MUST be rejected. Returned rows MUST fit within a fixed 256,000-byte serialized response budget.
+
+Before execution, qpg MUST validate the local indexed metadata and run `EXPLAIN (FORMAT JSON)` without `ANALYZE`. The accepted plan MUST use the indexed primary key and MUST NOT contain sequential, bitmap, sort, materialization, filter, or unrecognized nodes. Estimated plan cost above 1,000 MUST be rejected. `EXPLAIN` is an admission check and MUST NOT be represented as a cost or runtime guarantee.
+
+Accepted row queries MUST run in a read-only transaction with transaction-local 2-second statement timeout, lock timeout, conservative work memory, and parallel-gather disabled before preflight begins. Row values MUST be returned to the caller only and MUST NOT be stored in SQLite or query caches.
+
 ## Local Storage Contract
 
 ### SQLite location
@@ -74,9 +84,9 @@ The following table names are contractually stable and MUST NOT change without m
 
 ## Architectural Invariants
 
-- PostgreSQL MUST be used only for schema introspection and usage-signal collection.
+- PostgreSQL MUST be used only for schema introspection, usage-signal collection, and accepted bounded row queries.
 - SQLite MUST remain the local source of truth for indexed metadata and retrieval state.
-- Retrieval commands and MCP tools MUST answer from the local SQLite index and MUST NOT read PostgreSQL row values at query time.
+- Schema retrieval commands and default MCP tools MUST answer from the local SQLite index and MUST NOT read PostgreSQL row values at query time. The explicitly enabled bounded row-query capability is the sole exception.
 
 Separation-of-concerns invariants:
 

@@ -13,6 +13,7 @@ Opt-in integration tests MUST validate:
 - readonly role pass
 - elevated role fail
 - write attempts are still blocked through `qpg` session guards even for roles with write grants
+- bounded row-query tests MUST cover limits, ordering, tiny-table `SELECT *`, index-backed plans, rejected sequential scans, and transient-only row results
 
 ## Dependency And Tooling Contract
 

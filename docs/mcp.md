@@ -26,3 +26,9 @@ Optional update tool:
 
 - Start MCP with `qpg mcp --enable-update-tool`
 - Call `qpg.update_source` with `{"source":"<name>"}` or `{"source":"<name>","skip_functions":true}`
+
+Optional bounded row query tool:
+
+- Start MCP with `qpg mcp --enable-query-tool`.
+- Call `qpg.query_rows` with structured `source`, `table`, `columns`, and `mode` fields. `lookup` requires `key`; `page` requires `limit` and may include an exclusive `key` cursor.
+- It supports eligible single-primary-key base tables only and rejects unsafe requests before execution.

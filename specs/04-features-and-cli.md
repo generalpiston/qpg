@@ -83,6 +83,7 @@ The stable command surface MUST be:
 - `search`
 - `vsearch`
 - `query`
+- `rows`
 - `get`
 - `schema`
 - `mcp`
@@ -104,3 +105,7 @@ CLI argument contract:
 - `--skip-pattern` on `source add` MUST be repeatable and MUST add glob entries to `skip_patterns`
 - `--kind` on retrieval commands MUST accept only documented object kinds
 - unsupported commands, flags, or flag combinations MUST fail through CLI argument parsing with a non-zero exit status
+
+### Bounded row queries
+
+`qpg rows lookup` MUST require `--source`, `--table`, repeatable `--column`, and `--key`. `qpg rows page` MUST require `--source`, `--table`, repeatable `--column`, and `--limit`; it MAY accept `--after` as an exclusive primary-key cursor. Both commands MUST run only the structured bounded row-query contract and MUST reject unsafe requests before executing the data query.

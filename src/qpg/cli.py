@@ -46,6 +46,7 @@ from qpg.mcp.server_stdio import serve_stdio
 from qpg.query.expand import expand_query
 from qpg.query.rerank import RerankHookError, rerank_with_hook
 from qpg.query.rrf import reciprocal_rank_fusion
+from qpg.row_query import RowQueryError, execute_row_query
 from qpg.schema.introspect import apply_filters, introspect_schema
 from qpg.schema.privilege_check import check_privileges, format_privilege_report
 from qpg.settings import config_yaml_path, resolve_openai_settings, resolve_pg_connect_timeout_sec
@@ -1065,6 +1066,45 @@ def cmd_query(args: argparse.Namespace) -> int:
         conn.close()
 
 
+def cmd_rows(args: argparse.Namespace) -> int:
+    conn = _with_db()
+    try:
+        request = {
+            "source": args.source,
+            "table": args.table,
+            "columns": args.column,
+            "mode": args.rows_mode,
+        }
+        if args.rows_mode == "lookup":
+            request["key"] = args.key
+        else:
+            request["key"] = args.after
+            request["limit"] = args.limit
+        try:
+            source = get_source(conn, args.source)
+            with connect_pg(source.dsn) as pg_conn:
+                payload = execute_row_query(conn, pg_conn, request)
+        except RowQueryError as exc:
+            print(f"row query rejected: {exc}", file=sys.stderr)
+            return 2
+        except Exception as exc:
+            print(f"row query failed: {exc}", file=sys.stderr)
+            return 4
+        if args.json:
+            _print_json(payload)
+        else:
+            rows = payload["rows"]
+            if not rows:
+                print("(no rows)")
+            else:
+                print("\t".join(rows[0].keys()))
+                for row in rows:
+                    print("\t".join(str(value) for value in row.values()))
+        return 0
+    finally:
+        conn.close()
+
+
 def cmd_get(args: argparse.Namespace) -> int:
     conn = _with_db()
     try:
@@ -1212,6 +1252,7 @@ def os_kill(pid: int, sig: signal.Signals) -> None:
 
 def cmd_mcp(args: argparse.Namespace) -> int:
     paths = ensure_dirs(get_paths())
+    enable_query_tool = bool(getattr(args, "enable_query_tool", False))
 
     if args.mcp_cmd == "stop":
         return _mcp_stop(paths.mcp_pid_file)
@@ -1235,6 +1276,8 @@ def cmd_mcp(args: argparse.Namespace) -> int:
         ]
         if args.enable_update_tool:
             cmd.append("--enable-update-tool")
+        if enable_query_tool:
+            cmd.append("--enable-query-tool")
         proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         _write_pid_file(paths.mcp_pid_file, proc.pid)
         print(f"started mcp daemon pid={proc.pid} host={args.host} port={args.port}")
@@ -1250,15 +1293,20 @@ def cmd_mcp(args: argparse.Namespace) -> int:
             print("health endpoint: GET /health, rpc endpoint: POST /mcp")
             print("codex/claude-code integration: set MCP server command to "
                   f"`qpg mcp --http --host {args.host} --port {args.port}`")
-            return serve_http(
-                conn,
-                host=args.host,
-                port=args.port,
-                enable_update_tool=args.enable_update_tool,
-            )
+            http_kwargs: dict[str, Any] = {
+                "host": args.host,
+                "port": args.port,
+                "enable_update_tool": args.enable_update_tool,
+            }
+            if enable_query_tool:
+                http_kwargs["enable_query_tool"] = True
+            return serve_http(conn, **http_kwargs)
         print("qpg MCP stdio server started", file=sys.stderr)
         print("codex/claude-code integration: set MCP server command to `qpg mcp`", file=sys.stderr)
-        return serve_stdio(conn, enable_update_tool=args.enable_update_tool)
+        stdio_kwargs: dict[str, Any] = {"enable_update_tool": args.enable_update_tool}
+        if enable_query_tool:
+            stdio_kwargs["enable_query_tool"] = True
+        return serve_stdio(conn, **stdio_kwargs)
     finally:
         conn.close()
 
@@ -1437,6 +1485,21 @@ def build_parser() -> argparse.ArgumentParser:
         search_parser.add_argument("--source")
         search_parser.set_defaults(func=handler)
 
+    rows_parser = subparsers.add_parser("rows", help="run bounded primary-key PostgreSQL row access")
+    rows_sub = rows_parser.add_subparsers(dest="rows_mode", required=True)
+    for rows_mode in ("lookup", "page"):
+        mode_parser = rows_sub.add_parser(rows_mode)
+        mode_parser.add_argument("--source", required=True)
+        mode_parser.add_argument("--table", required=True, help="schema-qualified eligible base table")
+        mode_parser.add_argument("--column", action="append", required=True, help="selected safe column (repeatable)")
+        mode_parser.add_argument("--json", action="store_true")
+        mode_parser.set_defaults(func=cmd_rows)
+    lookup_parser = rows_sub.choices["lookup"]
+    lookup_parser.add_argument("--key", required=True, help="single primary-key value")
+    page_parser = rows_sub.choices["page"]
+    page_parser.add_argument("--after", help="exclusive primary-key cursor")
+    page_parser.add_argument("--limit", type=int, required=True)
+
     get_parser = subparsers.add_parser("get", help="get object details by name or id")
     get_parser.add_argument("ref")
     get_parser.add_argument("--source")
@@ -1455,6 +1518,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--enable-update-tool",
         action="store_true",
         help="expose the opt-in MCP source refresh tool qpg.update_source",
+    )
+    mcp_parser.add_argument(
+        "--enable-query-tool",
+        action="store_true",
+        help="expose the opt-in MCP bounded PostgreSQL row query tool",
     )
     mcp_parser.add_argument("--host", default="127.0.0.1")
     mcp_parser.add_argument("--port", type=int, default=8765)

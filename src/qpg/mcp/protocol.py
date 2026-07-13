@@ -5,13 +5,15 @@ import sqlite3
 from typing import Any
 
 from qpg import __version__
+from qpg.db_pg import connect_pg
 from qpg.get import ObjectNotFoundError, get_object_payload
 from qpg.index.fts import search_fts
 from qpg.index.vec import vector_search
 from qpg.query.expand import expand_query
 from qpg.query.rerank import rerank_with_hook
 from qpg.query.rrf import reciprocal_rank_fusion
-from qpg.sources import list_sources
+from qpg.row_query import execute_row_query
+from qpg.sources import get_source, list_sources
 from qpg.update import NoSourcesConfiguredError, update_sources
 from qpg.util.redaction import redact_dsn
 
@@ -91,6 +93,33 @@ BASE_TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
 ]
 
+
+ROW_QUERY_TOOL_SCHEMA: dict[str, Any] = {
+    "name": "qpg.query_rows",
+    "description": "Run a bounded, preflight-checked query against one PostgreSQL base table.",
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "source": {"type": "string"},
+            "table": {"type": "string", "description": "schema-qualified base table"},
+            "columns": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"type": "string"}},
+            "mode": {"type": "string", "enum": ["lookup", "page"]},
+            "key": {},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+        },
+        "required": ["source", "table", "columns", "mode"],
+        "allOf": [
+            {
+                "oneOf": [
+                    {"properties": {"mode": {"const": "lookup"}}, "required": ["key"]},
+                    {"properties": {"mode": {"const": "page"}}, "required": ["limit"]},
+                ]
+            }
+        ],
+        "additionalProperties": False,
+    },
+}
+
 UPDATE_TOOL_SCHEMA: dict[str, Any] = {
     "name": "qpg.update_source",
     "description": "Refresh one configured source into the local schema index.",
@@ -106,8 +135,10 @@ UPDATE_TOOL_SCHEMA: dict[str, Any] = {
 }
 
 
-def tool_schemas(*, enable_update_tool: bool = False) -> list[dict[str, Any]]:
+def tool_schemas(*, enable_update_tool: bool = False, enable_query_tool: bool = False) -> list[dict[str, Any]]:
     tools = list(BASE_TOOL_SCHEMAS)
+    if enable_query_tool:
+        tools.append(ROW_QUERY_TOOL_SCHEMA)
     if enable_update_tool:
         tools.append(UPDATE_TOOL_SCHEMA)
     return tools
@@ -172,6 +203,7 @@ def handle_tool_call(
     args: dict[str, Any] | None = None,
     *,
     enable_update_tool: bool = False,
+    enable_query_tool: bool = False,
 ) -> Any:
     args = args or {}
 
@@ -213,6 +245,19 @@ def handle_tool_call(
             for source in list_sources(conn)
         ]
 
+    if tool == "qpg.query_rows":
+        if not enable_query_tool:
+            raise MCPError("qpg.query_rows is disabled; restart MCP with --enable-query-tool")
+        source_name = str(args.get("source", "")).strip()
+        if not source_name:
+            raise MCPError("qpg.query_rows requires 'source'")
+        try:
+            query_source = get_source(conn, source_name)
+            with connect_pg(query_source.dsn) as pg_conn:
+                return execute_row_query(conn, pg_conn, args)
+        except Exception as exc:
+            raise MCPError(str(exc)) from exc
+
     if tool == "qpg.update_source":
         if not enable_update_tool:
             raise MCPError("qpg.update_source is disabled; restart MCP with --enable-update-tool")
@@ -236,6 +281,7 @@ def _handle_mcp_request(
     payload: dict[str, Any],
     *,
     enable_update_tool: bool = False,
+    enable_query_tool: bool = False,
 ) -> dict[str, Any] | None:
     request_id = payload.get("id")
     method = payload.get("method")
@@ -261,8 +307,8 @@ def _handle_mcp_request(
                 "capabilities": {"tools": {"listChanged": False}},
                 "serverInfo": {"name": "qpg", "version": __version__},
                 "instructions": (
-                    "qpg exposes PostgreSQL schema-index tools only. "
-                    "It never executes arbitrary SQL or reads table row values."
+                    "qpg exposes PostgreSQL schema-index tools and, when explicitly enabled, "
+                    "a bounded structured row-query tool. It never executes arbitrary SQL."
                 ),
             },
         )
@@ -271,7 +317,7 @@ def _handle_mcp_request(
         return _jsonrpc_result(request_id, {})
 
     if method == "tools/list":
-        return _jsonrpc_result(request_id, {"tools": tool_schemas(enable_update_tool=enable_update_tool)})
+        return _jsonrpc_result(request_id, {"tools": tool_schemas(enable_update_tool=enable_update_tool, enable_query_tool=enable_query_tool)})
 
     if method == "tools/call":
         tool_name = params.get("name")
@@ -286,6 +332,7 @@ def _handle_mcp_request(
                 tool_name,
                 arguments,
                 enable_update_tool=enable_update_tool,
+                enable_query_tool=enable_query_tool,
             )
             return _jsonrpc_result(
                 request_id,
@@ -312,5 +359,6 @@ def handle_request(
     payload: dict[str, Any],
     *,
     enable_update_tool: bool = False,
+    enable_query_tool: bool = False,
 ) -> dict[str, Any] | None:
-    return _handle_mcp_request(conn, payload, enable_update_tool=enable_update_tool)
+    return _handle_mcp_request(conn, payload, enable_update_tool=enable_update_tool, enable_query_tool=enable_query_tool)

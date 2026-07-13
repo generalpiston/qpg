@@ -124,6 +124,22 @@ def test_update_tool_is_hidden_by_default() -> None:
         conn.close()
 
 
+def test_row_query_tool_is_hidden_by_default_and_described_when_enabled() -> None:
+    conn = _db()
+    try:
+        hidden = handle_request(conn, {"jsonrpc": "2.0", "id": 16, "method": "tools/list"})
+        assert hidden is not None
+        assert "qpg.query_rows" not in [tool["name"] for tool in hidden["result"]["tools"]]
+
+        enabled = handle_request(conn, {"jsonrpc": "2.0", "id": 17, "method": "tools/list"}, enable_query_tool=True)
+        assert enabled is not None
+        schema = next(tool["inputSchema"] for tool in enabled["result"]["tools"] if tool["name"] == "qpg.query_rows")
+        assert schema["required"] == ["source", "table", "columns", "mode"]
+        assert schema["properties"]["mode"]["enum"] == ["lookup", "page"]
+    finally:
+        conn.close()
+
+
 def test_update_tool_can_be_enabled(monkeypatch) -> None:
     conn = _db()
     try:

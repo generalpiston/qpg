@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, cast
@@ -39,6 +40,16 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         server = cast(Any, self.server)
         return bool(getattr(server, "enable_update_tool", False))
 
+    @property
+    def _enable_query_tool(self) -> bool:
+        server = cast(Any, self.server)
+        return bool(getattr(server, "enable_query_tool", False))
+
+    @property
+    def _sqlite_lock(self) -> threading.Lock:
+        server = cast(Any, self.server)
+        return cast(threading.Lock, server.sqlite_lock)
+
     def do_GET(self) -> None:
         if self.path == "/health":
             self._write_json(HTTPStatus.OK, {"status": "ok"})
@@ -55,7 +66,11 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             self._write_json(HTTPStatus.BAD_REQUEST, {"error": "invalid JSON payload"})
             return
 
-        response = handle_request(self._conn, payload, enable_update_tool=self._enable_update_tool)
+        with self._sqlite_lock:
+            response = handle_request(self._conn, payload, enable_update_tool=self._enable_update_tool, enable_query_tool=self._enable_query_tool)
+        if response is None:
+            self._write_json(HTTPStatus.NO_CONTENT, {})
+            return
         self._write_json(HTTPStatus.OK, response)
 
 
@@ -65,10 +80,13 @@ def serve_http(
     host: str = "127.0.0.1",
     port: int = 8765,
     enable_update_tool: bool = False,
+    enable_query_tool: bool = False,
 ) -> int:
     server = ThreadingHTTPServer((host, port), MCPHTTPHandler)
     server.sqlite_conn = conn  # type: ignore[attr-defined]
+    server.sqlite_lock = threading.Lock()  # type: ignore[attr-defined]
     server.enable_update_tool = enable_update_tool  # type: ignore[attr-defined]
+    server.enable_query_tool = enable_query_tool  # type: ignore[attr-defined]
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -4,7 +4,7 @@
 
 `qpg` means **Query PostgreSQL (Schema)**.
 
-`qpg` MUST remain a local-first system for indexing and querying PostgreSQL schema metadata.
+`qpg` MUST remain a local-first system for indexing and querying PostgreSQL schema metadata, with an explicitly bounded row-query capability.
 `qpg` MUST expose a CLI and MAY expose a constrained MCP server over the local index.
 
 ## Scope
@@ -28,11 +28,13 @@
 
 `qpg` MUST NOT:
 
-- read table row values as part of normal product behavior
+- read table row values except through the bounded row-query contract
 - execute arbitrary user SQL against PostgreSQL
 - expose EXPLAIN or query planning features
 - mutate PostgreSQL state as part of normal usage
 - persist row values in the local index
+
+Bounded row queries MUST be transient and MUST NOT persist row values.
 
 ## Core Domain Model
 

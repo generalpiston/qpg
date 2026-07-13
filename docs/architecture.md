@@ -5,7 +5,7 @@
 
 Core invariant:
 - `qpg` indexes DDL-level structure and metadata only.
-- `qpg` does not retrieve or index row values.
+- `qpg` does not index row values; explicitly enabled bounded row queries may retrieve them transiently.
 
 ## Guiding Principles
 1. Security-first by default.
@@ -329,9 +329,10 @@ MCP tools:
 - `qpg.get`
 - `qpg.status`
 - `qpg.list_sources`
+- opt-in `qpg.query_rows`
 
 Constraint:
-- MCP exposes schema-index tools only, not arbitrary SQL execution.
+- MCP exposes schema-index tools by default and a constrained structured primary-key lookup/keyset-page tool only when explicitly enabled; it never executes arbitrary SQL.
 - `qpg.update_source` is opt-in and disabled unless the MCP server starts with `--enable-update-tool`.
 - MCP startup performs a best-effort background refresh of configured sources using the same guarded update behavior as `qpg update`, and logs refresh failures without aborting server startup.
 

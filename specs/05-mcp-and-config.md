@@ -18,14 +18,17 @@ Optional MCP tools MUST be explicitly gated off by default.
 Current opt-in tool:
 
 - `qpg.update_source`
+- `qpg.query_rows`, enabled only with `--enable-query-tool`
 
 ### MCP restrictions
 
 The MCP surface MUST NOT:
 
 - execute arbitrary SQL
-- read row values
+- expose row access except through the bounded `qpg.query_rows` contract
 - expose a more permissive database access path than the CLI
+
+`qpg.query_rows` MUST expose the same lookup and keyset-page contract as `qpg rows`. Its schema MUST reject unknown fields and define the allowed modes, limits, and selected-column bounds.
 
 ### MCP startup behavior
 
