@@ -50,7 +50,7 @@ are mandatory.
 
 Row queries MUST use structured inputs for one indexed base table only. A table is eligible only when
 it has one indexed, non-null, single-column primary key of a supported scalar type. Joins, views,
-aggregates, subqueries, expressions, functions, aliases, arbitrary SQL, filters, user-selected
+aggregates, subqueries, arbitrary expressions, unallowlisted functions, arbitrary SQL, filters, user-selected
 ordering, offsets, and `SELECT *` MUST be rejected.
 
 The only allowed operations are:
@@ -58,8 +58,14 @@ The only allowed operations are:
 - primary-key equality lookup with an effective limit of one;
 - ascending keyset pagination on the same primary key with a limit from 1 through 100.
 
-Requested result columns MUST be explicit, unique, and supported scalar types. Unbounded or complex
-types MUST be rejected. A serialized response MUST be no larger than 256,000 bytes.
+Requested projections MUST be explicit and unique. Physical projections must use supported scalar
+types and use `{ "column": "name" }`. The only expression projection is
+`{ "function": "left", "column": "name", "length": N, "alias": "name" }`, where the alias
+is explicit and unique, `N` is an integer from 1 through 4096, and the source is text-like. The
+reserved output name `__qpg_cursor` MUST be rejected. Arbitrary SQL, nested expressions, casts,
+predicates, and other functions MUST be rejected. A serialized response MUST be no larger than
+256,000 bytes. The bound limits returned text, but does not guarantee that PostgreSQL avoids reading
+or decompressing the source value.
 
 Before execution, qpg MUST validate local indexed metadata and run `EXPLAIN (FORMAT JSON)` without
 `ANALYZE`. The accepted plan MUST use the indexed primary key and MUST NOT contain sequential,
@@ -131,8 +137,8 @@ non-zero argument-parsing result.
 
 ### Row CLI
 
-`qpg rows lookup` MUST require `--source`, `--table`, repeatable `--column`, and `--key`.
-`qpg rows page` MUST require `--source`, `--table`, repeatable `--column`, and `--limit`; it MAY
+`qpg rows lookup` MUST require `--source`, `--table`, repeatable JSON `--projection`, and `--key`.
+`qpg rows page` MUST require `--source`, `--table`, repeatable JSON `--projection`, and `--limit`; it MAY
 accept `--after` as an exclusive primary-key cursor. Both commands MUST reject unsafe requests before
 executing the data query.
 
@@ -151,7 +157,7 @@ Optional MCP tools MUST be disabled by default. `qpg.update_source` requires
 
 MCP MUST never execute arbitrary SQL or expose a more permissive database access path than the CLI.
 `qpg.query_rows` MUST expose the same lookup and keyset-page contract as the row CLI. Its schema MUST
-reject unknown fields and define supported modes, limits, and selected-column bounds.
+reject unknown fields and define supported modes, limits, and projection bounds.
 
 MCP startup MUST begin a best-effort background refresh without delaying readiness. Refresh failure
 MUST NOT prevent startup and MUST be logged.

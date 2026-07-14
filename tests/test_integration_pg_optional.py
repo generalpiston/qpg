@@ -33,6 +33,22 @@ def _row_query_db(dsn: str) -> sqlite3.Connection:
         "INSERT INTO indexes(object_id, index_name, is_primary, columns_json) VALUES (?, ?, 1, ?)",
         ("keys-table", "qpg_harness_keys_pkey", json.dumps(["id"])),
     )
+    conn.execute(
+        "INSERT INTO db_objects(id, source_id, schema_name, object_name, object_type, fqname) "
+        "VALUES (?, ?, 'public', 'qpg_harness_orders', 'table', 'public.qpg_harness_orders')",
+        ("orders-table", source.id),
+    )
+    conn.executemany(
+        "INSERT INTO columns(object_id, column_name, data_type, is_nullable, ordinal_position) VALUES (?, ?, ?, ?, ?)",
+        [
+            ("orders-table", "id", "bigint", 0, 1),
+            ("orders-table", "status", "text", 1, 2),
+        ],
+    )
+    conn.execute(
+        "INSERT INTO indexes(object_id, index_name, is_primary, columns_json) VALUES (?, ?, 1, ?)",
+        ("orders-table", "qpg_harness_orders_pkey", json.dumps(["id"])),
+    )
     conn.commit()
     return conn
 
@@ -98,7 +114,7 @@ def test_bounded_row_lookup_and_keyset_page(integration_dsns: dict[str, str]) ->
                 {
                     "source": "work",
                     "table": "public.qpg_harness_keys",
-                    "columns": ["id", "created_at"],
+                    "projections": [{"column": "id"}, {"column": "created_at"}],
                     "mode": "lookup",
                     "key": 2,
                 },
@@ -109,10 +125,24 @@ def test_bounded_row_lookup_and_keyset_page(integration_dsns: dict[str, str]) ->
                 {
                     "source": "work",
                     "table": "public.qpg_harness_keys",
-                    "columns": ["id"],
+                    "projections": [{"column": "id"}],
                     "mode": "page",
                     "key": 1,
                     "limit": 2,
+                },
+            )
+            expression = execute_row_query(
+                sqlite_conn,
+                pg_conn,
+                {
+                    "source": "work",
+                    "table": "public.qpg_harness_orders",
+                    "projections": [
+                        {"column": "id"},
+                        {"function": "left", "column": "status", "length": 8, "alias": "status_prefix"},
+                    ],
+                    "mode": "lookup",
+                    "key": 1,
                 },
             )
     finally:
@@ -122,3 +152,4 @@ def test_bounded_row_lookup_and_keyset_page(integration_dsns: dict[str, str]) ->
     assert lookup["preflight"]["node_types"] == ["Limit", "Index Scan"]
     assert [row["id"] for row in page["rows"]] == [2, 3]
     assert page["next_cursor"] == 3
+    assert expression["rows"] == [{"id": 1, "status_prefix": "database"}]

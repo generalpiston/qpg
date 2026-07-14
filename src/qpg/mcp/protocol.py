@@ -96,18 +96,43 @@ BASE_TOOL_SCHEMAS: list[dict[str, Any]] = [
 
 ROW_QUERY_TOOL_SCHEMA: dict[str, Any] = {
     "name": "qpg.query_rows",
-    "description": "Run a bounded, preflight-checked query against one PostgreSQL base table.",
+    "description": "Run a bounded, preflight-checked primary-key query against one PostgreSQL base table.",
     "inputSchema": {
         "type": "object",
         "properties": {
             "source": {"type": "string"},
             "table": {"type": "string", "description": "schema-qualified base table"},
-            "columns": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"type": "string"}},
+            "projections": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 16,
+                "items": {
+                    "oneOf": [
+                        {
+                            "type": "object",
+                            "properties": {"column": {"type": "string", "minLength": 1}},
+                            "required": ["column"],
+                            "additionalProperties": False,
+                        },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "function": {"const": "left"},
+                                "column": {"type": "string", "minLength": 1},
+                                "length": {"type": "integer", "minimum": 1, "maximum": 4096},
+                                "alias": {"type": "string", "minLength": 1, "maxLength": 64},
+                            },
+                            "required": ["function", "column", "length", "alias"],
+                            "additionalProperties": False,
+                        },
+                    ]
+                },
+            },
             "mode": {"type": "string", "enum": ["lookup", "page"]},
             "key": {},
             "limit": {"type": "integer", "minimum": 1, "maximum": 100},
         },
-        "required": ["source", "table", "columns", "mode"],
+        "required": ["source", "table", "projections", "mode"],
         "allOf": [
             {
                 "oneOf": [

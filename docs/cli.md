@@ -46,10 +46,12 @@ Bounded row query example:
 
 ```bash
 qpg rows lookup --source work --table public.orders --key 42 \
-  --column id --column status --json
+  --projection '{"column":"id"}' --projection '{"column":"status"}' --json
 
 qpg rows page --source work --table public.orders --after 42 --limit 25 \
-  --column id --column status --json
+  --projection '{"column":"id"}' --projection '{"function":"left","column":"status","length":20,"alias":"status_prefix"}' --json
 ```
 
-Row queries support only eligible single-primary-key tables. They perform an exact key lookup or ascending keyset page, always require explicit safe columns, and never accept SQL text, `SELECT *`, filters, offsets, or custom ordering. Unsafe plans are rejected before execution; row values are not stored locally.
+Row queries support only eligible single-primary-key tables. They perform an exact key lookup or ascending keyset page, require repeatable JSON projections, and never accept SQL text, `SELECT *`, filters, offsets, or custom ordering. Physical projections select safe scalar columns; the only expression is a bounded `LEFT` projection with an explicit alias. Unsafe plans are rejected before execution; row values are not stored locally.
+
+`LEFT` bounds the returned text only; PostgreSQL may still need to read or decompress its source value.

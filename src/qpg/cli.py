@@ -1072,9 +1072,14 @@ def cmd_rows(args: argparse.Namespace) -> int:
         request = {
             "source": args.source,
             "table": args.table,
-            "columns": args.column,
+            "projections": [],
             "mode": args.rows_mode,
         }
+        try:
+            request["projections"] = [json.loads(item) for item in args.projection]
+        except json.JSONDecodeError as exc:
+            print(f"row query rejected: invalid projection JSON: {exc}", file=sys.stderr)
+            return 2
         if args.rows_mode == "lookup":
             request["key"] = args.key
         else:
@@ -1491,7 +1496,10 @@ def build_parser() -> argparse.ArgumentParser:
         mode_parser = rows_sub.add_parser(rows_mode)
         mode_parser.add_argument("--source", required=True)
         mode_parser.add_argument("--table", required=True, help="schema-qualified eligible base table")
-        mode_parser.add_argument("--column", action="append", required=True, help="selected safe column (repeatable)")
+        mode_parser.add_argument(
+            "--projection", action="append", required=True,
+            help='projection JSON, e.g. {"column":"id"} or LEFT projection (repeatable)',
+        )
         mode_parser.add_argument("--json", action="store_true")
         mode_parser.set_defaults(func=cmd_rows)
     lookup_parser = rows_sub.choices["lookup"]

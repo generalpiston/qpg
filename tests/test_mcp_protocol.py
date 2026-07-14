@@ -134,7 +134,7 @@ def test_row_query_tool_is_hidden_by_default_and_described_when_enabled() -> Non
         enabled = handle_request(conn, {"jsonrpc": "2.0", "id": 17, "method": "tools/list"}, enable_query_tool=True)
         assert enabled is not None
         schema = next(tool["inputSchema"] for tool in enabled["result"]["tools"] if tool["name"] == "qpg.query_rows")
-        assert schema["required"] == ["source", "table", "columns", "mode"]
+        assert schema["required"] == ["source", "table", "projections", "mode"]
         assert schema["properties"]["mode"]["enum"] == ["lookup", "page"]
     finally:
         conn.close()

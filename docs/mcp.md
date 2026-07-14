@@ -32,5 +32,5 @@ Optional update tool:
 Optional bounded row query tool:
 
 - Start MCP with `qpg mcp --enable-query-tool`.
-- Call `qpg.query_rows` with structured `source`, `table`, `columns`, and `mode` fields. `lookup` requires `key`; `page` requires `limit` and may include an exclusive `key` cursor.
+- Call `qpg.query_rows` with structured `source`, `table`, `projections`, and `mode` fields. A projection is either `{ "column": "name" }` or `{ "function": "left", "column": "text_col", "length": 500, "alias": "prefix" }`. `lookup` requires `key`; `page` requires `limit` and may include an exclusive `key` cursor.
 - It supports eligible single-primary-key base tables only and rejects unsafe requests before execution.

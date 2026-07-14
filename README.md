@@ -289,7 +289,7 @@ Opt-in bounded row access:
 qpg mcp --enable-query-tool
 ```
 
-This exposes `qpg.query_rows`, which supports only exact primary-key lookups and ascending keyset pages on eligible indexed base tables. Returned rows are never stored in the local index.
+This exposes `qpg.query_rows`, which supports only exact primary-key lookups and ascending keyset pages on eligible indexed base tables. Projections are structured physical columns or bounded `LEFT` text expressions; returned rows are never stored in the local index.
 
 Opt-in source refresh:
 

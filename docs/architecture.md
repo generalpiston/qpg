@@ -335,7 +335,7 @@ MCP tools:
 - opt-in `qpg.query_rows`
 
 Constraint:
-- MCP exposes schema-index tools by default and a constrained structured primary-key lookup/keyset-page tool only when explicitly enabled; it never executes arbitrary SQL.
+- MCP exposes schema-index tools by default and a constrained structured primary-key lookup/keyset-page tool only when explicitly enabled; it never executes arbitrary SQL. Row-query projections are physical safe scalars or an allowlisted bounded `LEFT` text projection.
 - `qpg.update_source` is opt-in and disabled unless the MCP server starts with `--enable-update-tool`.
 - MCP startup performs a best-effort background refresh of configured sources using the same guarded update behavior as `qpg update`, and logs refresh failures without aborting server startup.
 

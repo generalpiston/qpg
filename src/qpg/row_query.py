@@ -15,7 +15,9 @@ MAX_COLUMNS = 16
 MAX_RESPONSE_BYTES = 256_000
 MAX_ESTIMATED_COST = 1_000.0
 MAX_VARCHAR_LENGTH = 4_096
+MAX_ALIAS_LENGTH = 64
 _VARCHAR_RE = re.compile(r"^(?:character varying|varchar)\((\d+)\)$", re.IGNORECASE)
+_CHARACTER_RE = re.compile(r"^character\(\d+\)$", re.IGNORECASE)
 _SAFE_SCALAR_TYPES = {
     "smallint",
     "integer",
@@ -25,6 +27,7 @@ _SAFE_SCALAR_TYPES = {
     "timestamp without time zone",
     "timestamp with time zone",
 }
+_LEFT_TYPES = {"text", "character", "character varying"}
 
 
 class RowQueryError(RuntimeError):
@@ -32,10 +35,25 @@ class RowQueryError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class PhysicalProjection:
+    column: str
+
+
+@dataclass(frozen=True)
+class LeftProjection:
+    column: str
+    length: int
+    alias: str
+
+
+Projection = PhysicalProjection | LeftProjection
+
+
+@dataclass(frozen=True)
 class RowQuery:
     source: str
     table: str
-    columns: tuple[str, ...]
+    projections: tuple[Projection, ...]
     mode: str
     key: Any | None
     limit: int
@@ -67,8 +85,16 @@ def _safe_type(data_type: str) -> bool:
     return match is not None and int(match.group(1)) <= MAX_VARCHAR_LENGTH
 
 
+def _left_type(data_type: str) -> bool:
+    normalized = data_type.strip().lower()
+    if normalized in _LEFT_TYPES:
+        return True
+    match = _VARCHAR_RE.fullmatch(normalized)
+    return match is not None or _CHARACTER_RE.fullmatch(normalized) is not None
+
+
 def parse_request(value: dict[str, Any]) -> RowQuery:
-    unknown = set(value) - {"source", "table", "columns", "mode", "key", "limit"}
+    unknown = set(value) - {"source", "table", "projections", "mode", "key", "limit"}
     if unknown:
         raise RowQueryError(f"unsupported row-query fields: {', '.join(sorted(unknown))}")
     source = str(value.get("source", "")).strip()
@@ -78,12 +104,35 @@ def parse_request(value: dict[str, Any]) -> RowQuery:
         raise RowQueryError("source and schema-qualified table are required")
     if mode not in {"lookup", "page"}:
         raise RowQueryError("mode must be 'lookup' or 'page'")
-    raw_columns = value.get("columns")
-    if not isinstance(raw_columns, list) or not raw_columns or len(raw_columns) > MAX_COLUMNS:
-        raise RowQueryError(f"columns must contain between 1 and {MAX_COLUMNS} entries")
-    columns = tuple(str(item).strip() for item in raw_columns)
-    if any(not item or item == "*" for item in columns) or len(set(columns)) != len(columns):
-        raise RowQueryError("columns must be explicit, non-empty, and unique")
+    raw_projections = value.get("projections")
+    if not isinstance(raw_projections, list) or not raw_projections or len(raw_projections) > MAX_COLUMNS:
+        raise RowQueryError(f"projections must contain between 1 and {MAX_COLUMNS} entries")
+    projections: list[Projection] = []
+    names: set[str] = set()
+    for raw in raw_projections:
+        if not isinstance(raw, dict):
+            raise RowQueryError("each projection must be an object")
+        if set(raw) == {"column"} and isinstance(raw.get("column"), str):
+            projection: Projection = PhysicalProjection(raw["column"].strip())
+            if not projection.column or projection.column in {"*", "__qpg_cursor"}:
+                raise RowQueryError("physical projections require an explicit column")
+        elif set(raw) == {"function", "column", "length", "alias"}:
+            if raw.get("function") != "left" or not isinstance(raw.get("column"), str) or not isinstance(raw.get("alias"), str):
+                raise RowQueryError("the only supported expression is LEFT with a column and alias")
+            length = raw["length"]
+            alias = raw["alias"].strip()
+            if isinstance(length, bool) or not isinstance(length, int) or not 1 <= length <= MAX_VARCHAR_LENGTH:
+                raise RowQueryError(f"LEFT length must be between 1 and {MAX_VARCHAR_LENGTH}")
+            if not alias or len(alias) > MAX_ALIAS_LENGTH or alias == "__qpg_cursor":
+                raise RowQueryError("expression aliases must be non-empty, short, and not internal")
+            projection = LeftProjection(raw["column"].strip(), length, alias)
+        else:
+            raise RowQueryError("projection must be a physical column or a LEFT expression")
+        name = projection.column if isinstance(projection, PhysicalProjection) else projection.alias
+        if not name or name in names:
+            raise RowQueryError("projection output names must be explicit and unique")
+        names.add(name)
+        projections.append(projection)
     key = value.get("key")
     if mode == "lookup" and key is None:
         raise RowQueryError("lookup mode requires key")
@@ -101,7 +150,7 @@ def parse_request(value: dict[str, Any]) -> RowQuery:
         limit = limit_value
         if not 1 <= limit <= MAX_LIMIT:
             raise RowQueryError(f"limit must be between 1 and {MAX_LIMIT}")
-    return RowQuery(source, table, columns, mode, key, limit)
+    return RowQuery(source, table, tuple(projections), mode, key, limit)
 
 
 def _table_access(sqlite_conn: Any, request: RowQuery) -> TableAccess:
@@ -133,18 +182,28 @@ def _table_access(sqlite_conn: Any, request: RowQuery) -> TableAccess:
     primary_key = primary_columns[0]
     if primary_key not in columns or nullable.get(primary_key, True) or not _safe_type(columns[primary_key]):
         raise RowQueryError("primary key type is not eligible for bounded row queries")
-    if any(column not in columns for column in request.columns):
-        raise RowQueryError("query references an unknown column")
-    if any(not _safe_type(columns[column]) for column in request.columns):
-        raise RowQueryError("query selects an unsupported or unbounded column type")
+    for projection in request.projections:
+        if projection.column not in columns:
+            raise RowQueryError("query references an unknown column")
+        if isinstance(projection, PhysicalProjection) and not _safe_type(columns[projection.column]):
+            raise RowQueryError("query selects an unsupported or unbounded column type")
+        if isinstance(projection, LeftProjection) and not _left_type(columns[projection.column]):
+            raise RowQueryError("LEFT expressions require a text column")
     return TableAccess(source, primary_key, str(primary_rows[0]["index_name"]), columns)
 
 
 def _build_sql(request: RowQuery, access: TableAccess) -> tuple[str, list[Any]]:
     qualified = ".".join(_identifier(part) for part in request.table.split("."))
-    selected = ", ".join(_identifier(column) for column in request.columns)
-    sql = f"SELECT {selected}, {_identifier(access.primary_key)} AS \"__qpg_cursor\" FROM {qualified}"
+    selected_parts: list[str] = []
     params: list[Any] = []
+    for projection in request.projections:
+        if isinstance(projection, PhysicalProjection):
+            selected_parts.append(_identifier(projection.column))
+        else:
+            selected_parts.append(f"LEFT({_identifier(projection.column)}, %s) AS {_identifier(projection.alias)}")
+            params.append(projection.length)
+    selected = ", ".join(selected_parts)
+    sql = f"SELECT {selected}, {_identifier(access.primary_key)} AS \"__qpg_cursor\" FROM {qualified}"
     if request.mode == "lookup":
         sql += f" WHERE {_identifier(access.primary_key)} = %s"
         params.append(request.key)
@@ -218,7 +277,11 @@ def _normalize_rows(raw_rows: list[dict[str, Any]], request: RowQuery) -> tuple[
     byte_count = 0
     next_cursor: Any | None = None
     for raw_row in raw_rows:
-        row = {column: _normalize_value(raw_row[column]) for column in request.columns}
+        row = {
+            (projection.column if isinstance(projection, PhysicalProjection) else projection.alias):
+            _normalize_value(raw_row[projection.column if isinstance(projection, PhysicalProjection) else projection.alias])
+            for projection in request.projections
+        }
         encoded = json.dumps(row, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         byte_count += len(encoded)
         if byte_count > MAX_RESPONSE_BYTES:
@@ -246,7 +309,11 @@ def execute_row_query(sqlite_conn: Any, pg_conn: Any, value: dict[str, Any]) -> 
     return {
         "source": access.source.name,
         "table": request.table,
-        "columns": list(request.columns),
+        "projections": [
+            {"column": p.column} if isinstance(p, PhysicalProjection)
+            else {"function": "left", "column": p.column, "length": p.length, "alias": p.alias}
+            for p in request.projections
+        ],
         "mode": request.mode,
         "limit": request.limit,
         "rows": rows,
